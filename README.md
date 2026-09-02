@@ -30,3 +30,7 @@ Push repository ke GitHub, import ke Vercel, lalu isi Environment Variables:
 
 ## Catatan produksi
 Versi ini adalah fondasi yang langsung dapat dijalankan. Untuk POS produksi penuh, tambahkan autentikasi kasir, database (mis. Supabase/Postgres), stok realtime, pembayaran, manajemen meja/QR, order status realtime, audit log, laporan PDF, dan WhatsApp Business Cloud API bila pesan harus masuk otomatis tanpa customer menekan Send di WhatsApp.
+
+
+## Perbaikan build Vercel
+Project ini menggunakan alias import `@/*` yang dipetakan ke root project melalui `tsconfig.json`, sehingga import seperti `@/components/CustomerMenu` dapat di-resolve oleh Next.js/Vercel.
