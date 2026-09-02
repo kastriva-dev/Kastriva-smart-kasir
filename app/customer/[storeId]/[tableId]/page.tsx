@@ -1,2 +1,2 @@
-import CustomerMenu from "@/components/CustomerMenu";
-export default async function Page({params}:{params:Promise<{storeId:string;tableId:string}>}){const p=await params;return <CustomerMenu storeId={p.storeId} tableId={p.tableId}/> }
+import CustomerOrdering from "@/components/CustomerOrdering";
+export default async function Page({params}:{params:Promise<{storeId:string;tableId:string}>}){const p=await params;return <CustomerOrdering storeId={p.storeId} tableId={p.tableId}/> }

@@ -1,0 +1,1 @@
+export default function Offline(){return <main className="hero"><div className="card glass" style={{maxWidth:460,textAlign:"center"}}><h1>Mode Offline</h1><p className="muted">Aplikasi masih dapat dibuka dari cache. Sinkronisasi akan berjalan saat koneksi kembali.</p></div></main>}

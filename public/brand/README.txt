@@ -1,0 +1,1 @@
+Replace logo.png with your original Kastriva logo asset when available. Keep the same filename.
