@@ -1,64 +1,85 @@
-# Kastriva Smart Kasir — Enterprise Restaurant POS
+# Kastriva Smart Kasir — Enterprise POS + Google Apps Script Backend
 
-Versi 2.0 adalah UI/UX enterprise glassmorphism blue-glass dengan modul operasional restoran dan customer QR ordering.
+Frontend: Next.js / Vercel  
+Backend: Google Apps Script Web App  
+Database: Google Sheets  
+PWA: enabled
 
-## Modul yang tersedia
-Dashboard eksekutif, POS, Order Management, Kitchen Display Queue, Table Management, Reservation, Menu Engineering, Inventory, CRM/Pelanggan, Staff & Shift, Reports, QR & Online Ordering, Settings.
+## Arsitektur gratis
+Customer/Kasir → Vercel Next.js → `/api/*` server route → Google Apps Script → Google Sheets.
 
-## Customer QR
-URL:
-`/customer/[storeId]/[tableId]`
+Browser tidak perlu memanggil GAS langsung, sehingga frontend tetap same-origin dan URL GAS/API key tidak ditaruh di client.
 
-Contoh:
-`/customer/kastriva/meja-01`
+## Setup Google Apps Script
+1. Buat Google Spreadsheet baru, misalnya `Kastriva Smart Kasir DB`.
+2. Buka **Extensions → Apps Script**.
+3. Masukkan `gas/Code.gs`.
+4. Masukkan `gas/appsscript.json` sebagai manifest bila diperlukan.
+5. Di Apps Script buka **Project Settings → Script properties**.
+6. Tambahkan:
+   - `GAS_API_KEY` = secret acak Anda.
+7. Jalankan fungsi `setupDatabase()` sekali dan izinkan akses.
+8. Klik **Deploy → New deployment → Web app**.
+9. Execute as: **Me**.
+10. Who has access: **Anyone**.
+11. Copy URL `/exec`.
 
-Customer dapat memilih menu, jumlah, nama, catatan dan mengirim order ke WhatsApp kasir.
-
-## PWA
-Sudah tersedia:
-- Web App Manifest
-- Service worker
-- Offline fallback
-- Installable PWA metadata
-- Mobile-first responsive UI
-
-## Brand assets
-Folder:
-`public/brand/`
-`public/icons/`
-
-File yang digunakan:
-- logo.png
-- android-chrome-192x192.png
-- android-chrome-512x512.png
-- apple-touch-icon.png
-- favicon-16x16.png
-- favicon-32x32.png
-
-Asset di ZIP ini dibuat dari screenshot logo yang diberikan sebagai referensi. Jika Anda memiliki file PNG/ICO asli, replace dengan nama file yang sama agar kualitas asli dipakai.
-
-## Run
-Node.js 20+ direkomendasikan.
-
-```bash
-npm install
-cp .env.example .env.local
-npm run dev
+## Vercel Environment Variables
+Set:
+```text
+GAS_WEB_APP_URL=https://script.google.com/macros/s/DEPLOYMENT_ID/exec
+GAS_API_KEY=secret-yang-sama-dengan-script-property
+NEXT_PUBLIC_STORE_NAME=Kastriva Smart Kasir
+NEXT_PUBLIC_STORE_ID=kastriva
+NEXT_PUBLIC_CASHIER_WHATSAPP=628xxxxxxxxxx
 ```
 
-## Vercel
-Push ke GitHub, import repository di Vercel, lalu set:
-- NEXT_PUBLIC_STORE_NAME
-- NEXT_PUBLIC_STORE_ID
-- NEXT_PUBLIC_CASHIER_WHATSAPP
-- NEXT_PUBLIC_SUPABASE_URL (jika backend Supabase diaktifkan)
-- NEXT_PUBLIC_SUPABASE_ANON_KEY
+Setelah itu redeploy Vercel.
 
-## Production backend
-UI ini sengaja dapat berjalan tanpa backend agar deployment pertama mudah. `supabase/schema.sql` sudah disediakan sebagai fondasi database production. Untuk produksi restoran, sambungkan data menu/order/staff/inventory ke Supabase/Postgres, aktifkan authentication, RLS, realtime order, storage gambar, audit log dan payment gateway.
+## Sheet yang dibuat otomatis
+- Stores
+- Tables
+- Categories
+- Menu
+- Orders
+- OrderItems
+- Customers
+- Reservations
+- Inventory
+- Staff
+- AuditLog
+- Settings
 
-## WhatsApp
-Mode saat ini menggunakan click-to-chat `wa.me`. Customer tetap menekan tombol kirim di WhatsApp. Untuk pengiriman server-to-server tanpa membuka WhatsApp customer, gunakan WhatsApp Business Cloud API.
+## API actions
+GAS mendukung:
+- health
+- getMenu
+- getOrders
+- getOrder
+- createOrder
+- updateOrderStatus
+- getTables
+- getCustomers
+- getInventory
+- getReservations
+- saveMenu
+- saveTable
+- saveInventory
+- saveReservation
+- deleteMenu
+- audit
 
-## QR
-QR dapat diarahkan ke URL per meja. Pada halaman QR dashboard contoh digunakan generator QR online untuk visualisasi. Untuk produksi, generate QR secara lokal/server-side agar tidak bergantung pada pihak ketiga.
+## QR customer
+```text
+/customer/kastriva/meja-01
+/customer/kastriva/meja-02
+```
+
+Customer memilih menu → order disimpan ke Google Sheets → WhatsApp kasir dibuka dengan detail order.
+
+## Catatan penggunaan gratis
+Google Apps Script + Google Sheets sangat cocok untuk restoran kecil/menengah dan prototipe production. Untuk volume sangat tinggi, realtime yang ketat, atau banyak cabang dengan traffic besar, Apps Script/Sheets mempunyai quota dan batasan sehingga arsitektur database dedicated lebih tepat.
+
+## Logo
+ZIP ini mempertahankan asset logo asli yang ada pada project upload terbaru Anda:
+`public/brand/logo.png` dan seluruh icon PWA.
