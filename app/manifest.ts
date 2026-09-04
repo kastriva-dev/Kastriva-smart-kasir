@@ -1,2 +1,21 @@
 import type {MetadataRoute} from "next";
-export default function manifest():MetadataRoute.Manifest{return{name:"Kastriva Smart Kasir",short_name:"Kastriva",description:"Enterprise Restaurant POS & QR Ordering",start_url:"/",display:"standalone",background_color:"#06111f",theme_color:"#06111f",icons:[{src:"/icons/android-chrome-192x192.png",sizes:"192x192",type:"image/png"},{src:"/icons/android-chrome-512x512.png",sizes:"512x512",type:"image/png"}]}}
+import {STORE_NAME} from "@/lib/data";
+
+export default function manifest(): MetadataRoute.Manifest {
+  return {
+    name: STORE_NAME,
+    short_name: "Kastriva",
+    description: "Enterprise Restaurant POS & QR Ordering",
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    orientation: "portrait",
+    background_color: "#06111f",
+    theme_color: "#06111f",
+    icons: [
+      {src: "/icons/android-chrome-192x192.png", sizes: "192x192", type: "image/png", purpose: "any"},
+      {src: "/icons/android-chrome-512x512.png", sizes: "512x512", type: "image/png", purpose: "any"},
+      {src: "/icons/android-chrome-512x512.png", sizes: "512x512", type: "image/png", purpose: "maskable"}
+    ]
+  };
+}
