@@ -129,3 +129,33 @@
   .topActions{gap:6px}
   .orderDetail{padding:10px}
 }
+
+/* ============================================================
+   Halaman customer: menu kiri, keranjang kanan (sticky)
+   ============================================================ */
+.custPage{max-width:1150px;margin:0 auto;padding:16px 18px 40px}
+.custHead{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:16px}
+.custHead .logo{width:42px;height:42px;border-radius:12px;object-fit:contain}
+.custHead h1{font-size:17px}
+.custTools{margin-top:12px;padding:12px 14px;border-radius:14px}
+.custLayout{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:14px;margin-top:14px;align-items:start}
+.menuList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.menuRow{display:flex;gap:11px;align-items:center;padding:10px 12px;border-radius:14px}
+.menuRow .thumb{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,rgba(72,169,255,.2),rgba(107,231,255,.08));border:1px solid var(--line);flex:none}
+.menuRow .info{min-width:0;flex:1;display:grid;gap:2px}
+.menuRow h3{margin:0;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.menuRow .price{font-size:13px;font-weight:700}
+.menuRow .stockHint{font-size:10px;padding:2px 7px;justify-self:start}
+.menuRow .qty{gap:5px}
+.addBtn{width:32px;height:32px;padding:0;border-radius:9px;display:grid;place-items:center;flex:none}
+.qty .addBtn{width:28px;height:28px}
+.custCart{position:sticky;top:14px;max-height:calc(100vh - 28px);overflow:auto;padding:16px;border-radius:16px}
+.custCart h2{font-size:17px}
+.custBar{position:fixed;left:12px;right:12px;bottom:12px;z-index:50;display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:16px;animation:popIn .18s ease}
+@media(max-width:900px){
+  .custLayout{grid-template-columns:1fr}
+  .custCart{display:none}
+  .custPage{padding-bottom:96px}
+  .menuList{grid-template-columns:1fr}
+}
+@media(min-width:901px){.custBar{display:none}}

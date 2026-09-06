@@ -1,7 +1,7 @@
 "use client";
 import {useCallback, useEffect, useMemo, useState} from "react";
 import Image from "next/image";
-import {CloudUpload, RefreshCw, WifiOff} from "lucide-react";
+import {CloudUpload, Minus, Plus, RefreshCw, ShoppingCart, WifiOff, X} from "lucide-react";
 import {rupiah} from "@/lib/data";
 import {
   fetchPublicMenu,
@@ -45,6 +45,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [loadError, setLoadError] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [cartOpen, setCartOpen] = useState(false);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
   const [name, setName] = useState("");
@@ -107,15 +108,15 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
     setPendingCount(loadQueue(queueKeyStr).length);
     const update = () => setOnline(navigator.onLine);
     update();
-    window.addEventListener("online", () => {
+    const onOnline = () => {
       setOnline(true);
       void flushQueue();
-    });
+    };
+    window.addEventListener("online", onOnline);
     window.addEventListener("offline", () => setOnline(false));
     if (navigator.onLine) void flushQueue();
     return () => {
-      window.removeEventListener("online", update);
-      window.removeEventListener("offline", update);
+      window.removeEventListener("online", onOnline);
     };
   }, [queueKeyStr, flushQueue]);
 
@@ -135,9 +136,11 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
 
   const subtotal = useMemo(() => cart.reduce((sum, line) => sum + line.item.price * line.qty, 0), [cart]);
   const totals = useMemo(() => previewTotals(subtotal, 0, settings), [subtotal, settings]);
+  const itemCount = cart.reduce((sum, line) => sum + line.qty, 0);
 
   // Keranjang bertahan saat halaman ter-refresh / kembali dari WhatsApp.
   useEffect(() => {
+    if (!menus.length) return;
     try {
       const saved = window.localStorage.getItem(storageKey);
       if (!saved) return;
@@ -155,9 +158,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
     } catch {
       /* localStorage tidak tersedia atau isinya rusak: abaikan */
     }
-    // menus sengaja tidak di-depend: pemulihan cukup sekali setelah data siap.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey, menus.length > 0]);
+  }, [menus, storageKey]);
 
   useEffect(() => {
     try {
@@ -244,6 +245,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
       setPendingCount(queue.length);
       setOkMessage("Anda sedang offline. Pesanan disimpan dan otomatis terkirim saat koneksi kembali.");
       setCart([]);
+      setCartOpen(false);
       setSending(false);
       return;
     }
@@ -262,6 +264,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
       setOkMessage("Pesanan tersimpan! Kasir kami segera memproses.");
       setCart([]);
       setNote("");
+      setCartOpen(false);
     } catch (e) {
       // Bisa jadi koneksi putus di tengah jalan: masukkan antrean offline.
       const message = e instanceof Error ? e.message : "Gagal menyimpan pesanan";
@@ -272,6 +275,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
         setPendingCount(queue.length);
         setOkMessage("Koneksi terputus. Pesanan otomatis terkirim saat online kembali.");
         setCart([]);
+        setCartOpen(false);
       } else {
         setError(message);
       }
@@ -283,43 +287,68 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
   const storeDisplay = settings?.storeName || process.env.NEXT_PUBLIC_STORE_NAME || "Kastriva";
 
   return (
-    <main className="hero">
-      <div className="customer">
-        <div className="card glass">
-          <div className="pageHead">
-            <Image className="logo" src="/brand/logo.png" alt={storeDisplay} width={62} height={62} />
-            <div>
-              <h1 style={{margin: 0}}>{storeDisplay}</h1>
-              <p className="muted" style={{margin: "4px 0"}}>
-                Meja {tableId} • Digital Menu
-              </p>
-            </div>
-            {!online ? (
-              <span className="badge red offlineBadge">
-                <WifiOff size={13} aria-hidden="true" /> Offline
-              </span>
-            ) : null}
-          </div>
+    <main className="custPage">
+      <div className="card glass custHead">
+        <Image className="logo" src="/brand/logo.png" alt={storeDisplay} width={44} height={44} />
+        <div style={{minWidth: 0, flex: 1}}>
+          <h1 style={{margin: 0, fontSize: 18}}>{storeDisplay}</h1>
+          <p className="muted" style={{margin: "2px 0 0", fontSize: 13}}>
+            Meja {tableId} • Digital Menu
+          </p>
         </div>
+        {!online ? (
+          <span className="badge red offlineBadge">
+            <WifiOff size={13} aria-hidden="true" /> Offline
+          </span>
+        ) : null}
+      </div>
 
-        {loadState === "loading" ? (
-          <div className="card glass" style={{marginTop: 14}}>
-            <div className="skeleton" style={{height: 46}} />
-            <div className="skeleton" style={{height: 120, marginTop: 10}} />
-            <div className="skeleton" style={{height: 120}} />
-          </div>
-        ) : loadState === "error" ? (
-          <div className="card glass" style={{marginTop: 14}}>
-            <p className="alert error" role="alert">
-              {loadError}
-            </p>
-            <button type="button" className="btn primary" onClick={() => void loadData()}>
-              <RefreshCw size={15} aria-hidden="true" /> Coba Lagi
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="card glass" style={{marginTop: 14}}>
+      {error ? (
+        <p className="alert error" role="alert" style={{marginTop: 12}}>
+          {error}
+        </p>
+      ) : null}
+      {okMessage ? (
+        <p className="alert ok" role="status" style={{marginTop: 12}}>
+          {okMessage}
+          {lastOrder ? (
+            <>
+              <br />
+              <b>
+                No. Order {lastOrder.id} • Total {rupiah(lastOrder.total)}
+              </b>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {pendingCount > 0 ? (
+        <p className="alert" role="status" style={{marginTop: 12}}>
+          <CloudUpload size={14} aria-hidden="true" /> {pendingCount} pesanan menunggu koneksi — akan terkirim
+          otomatis.
+        </p>
+      ) : null}
+
+      {loadState === "loading" ? (
+        <div className="card glass" style={{marginTop: 12}}>
+          <div className="skeleton" style={{height: 42}} />
+          <div className="skeleton" style={{height: 58, marginTop: 10}} />
+          <div className="skeleton" style={{height: 58}} />
+          <div className="skeleton" style={{height: 58}} />
+        </div>
+      ) : loadState === "error" ? (
+        <div className="card glass" style={{marginTop: 12}}>
+          <p className="alert error" role="alert">
+            {loadError}
+          </p>
+          <button type="button" className="btn primary" onClick={() => void loadData()}>
+            <RefreshCw size={15} aria-hidden="true" /> Coba Lagi
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="card glass custTools">
+            <div className="searchWrap">
+              <SearchIcon />
               <input
                 className="search"
                 placeholder="Cari makanan atau minuman..."
@@ -327,165 +356,281 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
                 value={q}
                 onChange={e => setQ(e.target.value)}
               />
-              <div className="catRow" style={{marginTop: 10}}>
-                {cats.map(c => (
-                  <button
-                    type="button"
-                    className={`btn cat ${c === cat ? "primary" : ""}`}
-                    key={c}
-                    onClick={() => setCat(c)}
-                  >
-                    {c}
-                  </button>
-                ))}
-              </div>
             </div>
+            <div className="catRow" style={{marginTop: 9}}>
+              {cats.map(c => (
+                <button
+                  type="button"
+                  className={`btn cat ${c === cat ? "primary" : ""}`}
+                  key={c}
+                  onClick={() => setCat(c)}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          </div>
 
-            <div className="grid customerGrid" style={{marginTop: 14}}>
+          <div className="custLayout">
+            <section className="menuList" aria-label="Daftar menu">
               {list.length === 0 ? <div className="card glass empty">Menu tidak ditemukan.</div> : null}
               {list.map(item => {
                 const stock = stockOf(item);
                 const available = stock === null || stock > 0;
+                const inCart = cart.find(line => line.item.id === item.id);
                 return (
-                  <div className={`card glass ${available ? "" : "menuItemOff"}`} key={item.id}>
-                    <div className="menuIcon menuIconLg" aria-hidden="true">
+                  <div className={`card glass menuRow ${available ? "" : "menuItemOff"}`} key={item.id}>
+                    <div className="thumb" aria-hidden="true">
                       {item.emoji || "🍽️"}
                     </div>
-                    <h3>{item.name}</h3>
-                    <p className="muted">{item.category || "Lainnya"}</p>
-                    <div className="split">
-                      <b className="price">{rupiah(item.price)}</b>
-                      <button type="button" className="btn primary" disabled={!available} onClick={() => add(item)}>
-                        {available ? "Tambah" : "Habis"}
-                      </button>
+                    <div className="info">
+                      <h3 title={item.name}>{item.name}</h3>
+                      <span className="price">{rupiah(item.price)}</span>
+                      {stock !== null && stock <= 5 && available ? (
+                        <span className="badge amber stockHint">Sisa {stock}</span>
+                      ) : null}
                     </div>
+                    {available ? (
+                      inCart ? (
+                        <div className="qty">
+                          <button
+                            type="button"
+                            className="addBtn"
+                            aria-label={`Kurangi ${item.name}`}
+                            onClick={() => changeQty(item.id, -1)}
+                          >
+                            <Minus size={14} aria-hidden="true" />
+                          </button>
+                          <b>{inCart.qty}</b>
+                          <button
+                            type="button"
+                            className="addBtn"
+                            aria-label={`Tambah ${item.name}`}
+                            onClick={() => add(item)}
+                          >
+                            <Plus size={14} aria-hidden="true" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn primary addBtn"
+                          aria-label={`Tambah ${item.name}`}
+                          onClick={() => add(item)}
+                        >
+                          <Plus size={16} aria-hidden="true" />
+                        </button>
+                      )
+                    ) : (
+                      <span className="badge red">Habis</span>
+                    )}
                   </div>
                 );
               })}
-            </div>
-          </>
-        )}
+            </section>
 
-        <div className="card glass customerCart" style={{marginTop: 14}}>
-          <div className="split">
-            <h2>Pesanan Anda</h2>
-            <span className="badge">{cart.reduce((sum, line) => sum + line.qty, 0)} item</span>
+            <aside className="card glass custCart" aria-label="Pesanan Anda">
+              <CartPanel
+                cart={cart}
+                totals={totals}
+                name={name}
+                setName={setName}
+                note={note}
+                setNote={setNote}
+                sending={sending}
+                online={online}
+                waLink={waLink()}
+                showWa={Boolean(WA_PHONE)}
+                changeQty={changeQty}
+                send={send}
+                compact
+              />
+            </aside>
           </div>
+        </>
+      )}
 
-          {cart.length === 0 ? (
-            <div className="empty">Keranjang masih kosong.</div>
-          ) : (
-            cart.map(line => (
-              <div className="cartLine" key={line.item.id}>
-                <div>
-                  <b>{line.item.name}</b>
-                  <div className="muted">{rupiah(line.item.price * line.qty)}</div>
-                </div>
-                <div className="qty">
-                  <button
-                    type="button"
-                    aria-label={`Kurangi ${line.item.name}`}
-                    onClick={() => changeQty(line.item.id, -1)}
-                  >
-                    −
-                  </button>
-                  <b>{line.qty}</b>
-                  <button type="button" aria-label={`Tambah ${line.item.name}`} onClick={() => add(line.item)}>
-                    +
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-
-          <div className="formGrid" style={{marginTop: 12}}>
-            <Field label="Nama" value={name} setValue={setName} placeholder="Opsional" />
-            <Field label="Catatan" value={note} setValue={setNote} placeholder="Tidak pedas, tanpa bawang..." />
-          </div>
-
-          <div className="split muted" style={{marginTop: 14}}>
-            <span>Subtotal</span>
-            <span>{rupiah(totals.subtotal)}</span>
-          </div>
-          <div className="split muted" style={{marginTop: 6}}>
-            <span>Pajak {Math.round((settings?.taxRate ?? 0) * 100) / 100}%</span>
-            <span>{rupiah(totals.tax)}</span>
-          </div>
-          <div className="split muted" style={{marginTop: 6}}>
-            <span>Service {Math.round((settings?.serviceRate ?? 0) * 100) / 100}%</span>
-            <span>{rupiah(totals.service)}</span>
-          </div>
-          <div className="split" style={{marginTop: 10}}>
-            <span className="total">Total</span>
-            <span className="total">{rupiah(totals.total)}</span>
-          </div>
-
-          {error ? (
-            <p className="alert error" role="alert">
-              {error}
-            </p>
-          ) : null}
-          {okMessage ? (
-            <p className="alert ok" role="status">
-              {okMessage}
-              {lastOrder ? (
-                <>
-                  <br />
-                  <b>
-                    No. Order {lastOrder.id} • Total {rupiah(lastOrder.total)}
-                  </b>
-                </>
-              ) : null}
-            </p>
-          ) : null}
-          {pendingCount > 0 ? (
-            <p className="alert" role="status">
-              <CloudUpload size={14} aria-hidden="true" /> {pendingCount} pesanan menunggu koneksi — akan terkirim
-              otomatis.
-            </p>
-          ) : null}
-
-          <button
-            type="button"
-            className="btn success fullWidth"
-            style={{marginTop: 12}}
-            disabled={sending || cart.length === 0 || loadState !== "ready"}
-            onClick={send}
-          >
-            {sending ? "Mengirim..." : "Kirim Pesanan ke Kasir"}
+      {/* Bilah bawah mobile: ringkasan keranjang, ketuk untuk membuka */}
+      {loadState === "ready" && itemCount > 0 ? (
+        <div className="custBar glass">
+          <span>
+            <b>{itemCount} item</b>
+            <span className="muted"> • {rupiah(totals.total)}</span>
+          </span>
+          <button type="button" className="btn primary" onClick={() => setCartOpen(true)}>
+            <ShoppingCart size={15} aria-hidden="true" /> Lihat Pesanan
           </button>
-          {cart.length > 0 && WA_PHONE ? (
-            <a className="btn fullWidth" style={{marginTop: 8, textAlign: "center"}} href={waLink()} target="_blank" rel="noreferrer">
-              Konfirmasi via WhatsApp
-            </a>
-          ) : null}
         </div>
-      </div>
+      ) : null}
+
+      {cartOpen ? (
+        <div className="modal" role="dialog" aria-modal="true" aria-label="Pesanan Anda">
+          <div className="modalCard glass">
+            <div className="split">
+              <h2>Pesanan Anda</h2>
+              <button type="button" className="iconBtn" aria-label="Tutup" onClick={() => setCartOpen(false)}>
+                <X size={17} aria-hidden="true" />
+              </button>
+            </div>
+            <CartPanel
+              cart={cart}
+              totals={totals}
+              name={name}
+              setName={setName}
+              note={note}
+              setNote={setNote}
+              sending={sending}
+              online={online}
+              waLink={waLink()}
+              showWa={Boolean(WA_PHONE)}
+              changeQty={changeQty}
+              send={send}
+            />
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
 
-function Field({
-  label,
-  value,
-  setValue,
-  placeholder
-}: {
-  label: string;
-  value: string;
-  setValue: (value: string) => void;
-  placeholder?: string;
-}) {
+function SearchIcon() {
   return (
-    <label className="label">
-      {label}
-      <input
-        className="input"
-        value={value}
-        maxLength={label === "Catatan" ? 300 : 80}
-        onChange={e => setValue(e.target.value)}
-        placeholder={placeholder}
-      />
-    </label>
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
+
+type CartPanelProps = {
+  cart: CartLine[];
+  totals: {subtotal: number; discount: number; tax: number; service: number; total: number};
+  name: string;
+  setName: (value: string) => void;
+  note: string;
+  setNote: (value: string) => void;
+  sending: boolean;
+  online: boolean;
+  waLink: string;
+  showWa: boolean;
+  changeQty: (id: string, delta: number) => void;
+  send: () => void;
+  compact?: boolean;
+};
+
+function CartPanel({
+  cart,
+  totals,
+  name,
+  setName,
+  note,
+  setNote,
+  sending,
+  online,
+  waLink,
+  showWa,
+  changeQty,
+  send,
+  compact
+}: CartPanelProps) {
+  return (
+    <div>
+      <div className="split">
+        <h2 style={{margin: 0}}>Pesanan Anda</h2>
+        <span className="badge">{cart.reduce((sum, line) => sum + line.qty, 0)} item</span>
+      </div>
+
+      {cart.length === 0 ? (
+        <div className="empty">Belum ada menu. Pilih dari daftar di sebelah kiri.</div>
+      ) : (
+        cart.map(line => (
+          <div className="cartLine" key={line.item.id}>
+            <div style={{minWidth: 0}}>
+              <b>
+                {line.item.emoji} {line.item.name}
+              </b>
+              <div className="muted">
+                {rupiah(line.item.price)} × {line.qty} = {rupiah(line.item.price * line.qty)}
+              </div>
+            </div>
+            <div className="qty">
+              <button type="button" className="addBtn" aria-label={`Kurangi ${line.item.name}`} onClick={() => changeQty(line.item.id, -1)}>
+                <Minus size={14} aria-hidden="true" />
+              </button>
+              <b>{line.qty}</b>
+              <button type="button" className="addBtn" aria-label={`Tambah ${line.item.name}`} onClick={() => changeQty(line.item.id, 1)}>
+                <Plus size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        ))
+      )}
+
+      <div className={compact ? "formGrid" : "formGrid"} style={{marginTop: 10}}>
+        <label className="label">
+          Nama
+          <input
+            className="input"
+            value={name}
+            maxLength={80}
+            placeholder="Opsional"
+            onChange={e => setName(e.target.value)}
+          />
+        </label>
+        <label className="label">
+          Catatan
+          <input
+            className="input"
+            value={note}
+            maxLength={300}
+            placeholder="Tidak pedas, ..."
+            onChange={e => setNote(e.target.value)}
+          />
+        </label>
+      </div>
+
+      <div className="split muted" style={{marginTop: 12}}>
+        <span>Subtotal</span>
+        <span>{rupiah(totals.subtotal)}</span>
+      </div>
+      <div className="split muted" style={{marginTop: 5}}>
+        <span>Pajak</span>
+        <span>{rupiah(totals.tax)}</span>
+      </div>
+      <div className="split muted" style={{marginTop: 5}}>
+        <span>Service</span>
+        <span>{rupiah(totals.service)}</span>
+      </div>
+      <div className="split" style={{marginTop: 8}}>
+        <span className="total">Total</span>
+        <span className="total">{rupiah(totals.total)}</span>
+      </div>
+
+      <button
+        type="button"
+        className="btn success fullWidth"
+        style={{marginTop: 12}}
+        disabled={sending || cart.length === 0}
+        onClick={send}
+      >
+        {sending ? "Mengirim..." : "Kirim Pesanan ke Kasir"}
+      </button>
+      {showWa && cart.length > 0 ? (
+        <a
+          className="btn fullWidth"
+          style={{marginTop: 8, textAlign: "center"}}
+          href={waLink}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Konfirmasi via WhatsApp
+        </a>
+      ) : null}
+      {!online ? (
+        <p className="muted" style={{marginTop: 8, fontSize: 12}}>
+          Mode offline: pesanan akan tersimpan dan terkirim otomatis saat koneksi kembali.
+        </p>
+      ) : null}
+    </div>
   );
 }
