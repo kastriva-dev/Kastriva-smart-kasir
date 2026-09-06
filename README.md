@@ -5,6 +5,10 @@ Backend: Google Apps Script Web App
 Database: Google Sheets
 PWA: aktif (service worker disajikan dari `/sw.js`)
 
+> 📖 **Panduan pemakaian untuk pengguna akun (pembeli aplikasi):** lihat [`PANDUAN.md`](./PANDUAN.md)
+> atau klik tombol **?** di pojok kanan atas aplikasi (di sebelah kiri ikon lonceng) — panduan yang
+> sama tersedia langsung di dalam aplikasi.
+
 ## Arsitektur
 
 ```

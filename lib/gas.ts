@@ -61,6 +61,7 @@ export const ADMIN_ACTIONS = new Set([
   "saveInventory",
   "saveReservation",
   "saveCustomer",
+  "saveStaff",
   "saveSettings",
   "deleteData",
   "deleteMenu",

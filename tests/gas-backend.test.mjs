@@ -271,6 +271,34 @@ test("getStaff menyembunyikan pinHash", () => {
   assert.equal("pinHash" in staff[0], false);
 });
 
+test("saveStaff: tambah, PIN ter-hash, update PIN lama dipertahankan", () => {
+  const env = bootstrapped();
+
+  const created = env.call("saveStaff", {name: "Rizky", role: "Kasir", pin: "1234", active: true});
+  assert.equal(created.ok, true);
+  assert.ok(created.data.id, "staff baru mendapat id");
+  const savedRow = env.sheets.get("Staff").rows.find(r => r[0] === created.data.id);
+  assert.match(String(savedRow[4]), /^sha256\$/, "PIN harus tersimpan sebagai hash");
+  assert.equal(savedRow.includes("1234"), false, "PIN polos tidak boleh tersimpan");
+  const hashLama = String(savedRow[4]); // snapshot: baris sheet adalah referensi yang termutasi
+
+  const bad = env.call("saveStaff", {name: "Salah", pin: "12ab"});
+  assert.equal(bad.ok, false, "PIN non-digit ditolak");
+  assert.equal(env.call("saveStaff", {name: "Salah", pin: "12"}).ok, false, "PIN terlalu pendek ditolak");
+  assert.equal(env.call("saveStaff", {name: ""}).ok, false, "nama wajib");
+
+  const updated = env.call("saveStaff", {id: created.data.id, name: "Rizky P.", role: "Manager"});
+  assert.equal(updated.ok, true);
+  const updatedRow = env.sheets.get("Staff").rows.find(r => r[0] === created.data.id);
+  assert.equal(updatedRow[3], "Manager");
+  assert.equal(String(updatedRow[4]), hashLama, "PIN lama dipertahankan saat tidak diisi");
+
+  const replaced = env.call("saveStaff", {id: created.data.id, name: "Rizky P.", role: "Manager", pin: "567890"});
+  const replacedRow = env.sheets.get("Staff").rows.find(r => r[0] === created.data.id);
+  assert.notEqual(String(replacedRow[4]), hashLama, "PIN baru menggantikan hash lama");
+  assert.equal(replaced.data.name, "Rizky P.");
+});
+
 test("getOrders withItems menyertakan item", () => {
   const env = bootstrapped();
   env.call("createOrder", {items: [{menuItemId: "m1", qty: 1}, {menuItemId: "m2", qty: 2}]});

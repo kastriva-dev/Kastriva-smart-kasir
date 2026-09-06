@@ -160,6 +160,8 @@ function dispatch_(action, p) {
       return withLock_(function() { return upsertObject_('Reservations', normalizeReservation_(p)); });
     case 'saveCustomer':
       return withLock_(function() { return upsertObject_('Customers', normalizeCustomer_(p)); });
+    case 'saveStaff':
+      return withLock_(function() { return upsertObject_('Staff', normalizeStaff_(p)); });
     case 'saveSettings':
       return withLock_(function() { return saveSettings_(p); });
     case 'deleteData':
@@ -798,6 +800,38 @@ function normalizeCustomer_(p) {
   out.tier = ['MEMBER', 'SILVER', 'GOLD', 'PLATINUM'].indexOf(tier) !== -1 ? tier : 'MEMBER';
   out.updatedAt = iso_();
   if (!p.id) out.createdAt = iso_();
+  return out;
+}
+
+/**
+ * PIN kasir disimpan sebagai hash SHA-256 + prefix, tidak pernah sebagai teks polos.
+ * Kosong pada update berarti PIN lama dipertahankan.
+ */
+function hashPin_(pin) {
+  var digest = Utilities.computeDigest('kastriva-pin:' + String(pin), Utilities.Charset.UTF_8, Utilities.DigestAlgorithm.SHA_256);
+  var hex = '';
+  for (var i = 0; i < digest.length; i++) {
+    var v = (digest[i] + 256) % 256;
+    hex += ('0' + v.toString(16)).slice(-2);
+  }
+  return 'sha256$' + hex;
+}
+
+function normalizeStaff_(p) {
+  var out = Object.assign({}, p);
+  out.name = str_(p.name, 80);
+  if (!out.name) throw new Error('Nama staff wajib diisi');
+  out.role = str_(p.role, 32) || 'Kasir';
+  var pin = str_(p.pin, 12);
+  if (pin) {
+    if (!/^[0-9]{4,8}$/.test(pin)) throw new Error('PIN harus 4-8 digit angka');
+    out.pinHash = hashPin_(pin);
+  } else if (p.pinHash) {
+    out.pinHash = str_(p.pinHash, 128);
+  }
+  out.active = p.active === false || p.active === 'false' ? false : true;
+  if (!p.id) out.createdAt = iso_();
+  delete out.pin; // PIN polos tidak boleh tersimpan
   return out;
 }
 

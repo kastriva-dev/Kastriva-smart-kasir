@@ -8,6 +8,7 @@ import {
   BookOpen,
   CalendarDays,
   ChefHat,
+  CircleHelp,
   ClipboardList,
   Grid2X2,
   LayoutDashboard,
@@ -26,6 +27,7 @@ import {useOnline, useResource} from "@/components/admin/useResource";
 import {gasCall} from "@/lib/api";
 import PosPage from "@/components/admin/PosPage";
 import {KitchenPage, OrdersPage} from "@/components/admin/OrderPages";
+import GuideModal from "@/components/admin/GuideModal";
 import {
   CustomersPage,
   InventoryPage,
@@ -56,6 +58,7 @@ export default function AdminApp() {
   const router = useRouter();
   const [page, setPage] = useState("Dashboard");
   const [open, setOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [toast, setToast] = useState("");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const online = useOnline();
@@ -125,7 +128,7 @@ export default function AdminApp() {
     if (page === "Menu") return <MenuManagerPage menus={menus} reloadMenus={menusRes.reload} notify={notify} />;
     if (page === "Inventory") return <InventoryPage notify={notify} />;
     if (page === "Pelanggan") return <CustomersPage />;
-    if (page === "Staff") return <StaffPage />;
+    if (page === "Staff") return <StaffPage notify={notify} />;
     if (page === "Laporan") return <ReportsPage />;
     if (page === "QR & Online") return <OnlinePage tables={tables} />;
     if (page === "Pengaturan")
@@ -199,6 +202,15 @@ export default function AdminApp() {
                 <WifiOff size={13} aria-hidden="true" /> Offline
               </span>
             ) : null}
+            <button
+              type="button"
+              className="iconBtn"
+              aria-label="Panduan penggunaan"
+              title="Panduan penggunaan"
+              onClick={() => setGuideOpen(true)}
+            >
+              <CircleHelp size={18} aria-hidden="true" />
+            </button>
             <button type="button" className="iconBtn" aria-label="Notifikasi">
               <Bell size={18} aria-hidden="true" />
             </button>
@@ -215,6 +227,8 @@ export default function AdminApp() {
           {toast}
         </div>
       ) : null}
+
+      {guideOpen ? <GuideModal onClose={() => setGuideOpen(false)} /> : null}
     </div>
   );
 }

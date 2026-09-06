@@ -104,6 +104,8 @@ export type GasStaff = {
   storeId: string;
   name: string;
   role: string;
+  /** Hanya ada di payload tulis; getStaff menyembunyikannya dari pembacaan. */
+  pinHash?: string;
   active: boolean;
   createdAt: string;
 };

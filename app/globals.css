@@ -91,6 +91,17 @@
 .installCard{position:fixed;left:16px;bottom:16px;z-index:70;display:flex;gap:12px;align-items:center;justify-content:space-between;max-width:340px;padding:14px 16px;border-radius:16px;animation:popIn .2s ease}
 .installCard p{margin:2px 0 0;font-size:12px}
 
+/* Panduan penggunaan */
+.modalWide{max-width:780px}
+.guideChips{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}
+.guideChips .btn{padding:8px 11px;font-size:13px}
+.guideBody{max-height:58vh;overflow:auto;padding:2px 6px 2px 0}
+.guideBody h3{margin:0 0 10px}
+.guideBody ul{margin:0;padding-left:18px;display:grid;gap:8px;line-height:1.55}
+.guideBody li b{color:#fff}
+.guideBody code{background:rgba(2,15,28,.6);padding:1px 6px;border-radius:6px;font-size:12px}
+.guideFoot{margin-top:14px;font-size:12px}
+
 /* Struk cetak */
 .receiptPrint{margin:14px 0;padding:16px;border-radius:12px;background:#fff;color:#111;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .receiptHead{display:grid;gap:2px;text-align:center;padding-bottom:8px;border-bottom:1px dashed #999;font-weight:700}

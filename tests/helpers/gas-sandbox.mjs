@@ -4,6 +4,7 @@
  * secukupnya agar seluruh alur backend bisa dijalankan tanpa Google.
  */
 import {readFileSync} from "node:fs";
+import {createHash} from "node:crypto";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import vm from "node:vm";
@@ -81,7 +82,14 @@ export function createGasSandbox({apiKey = "rahasia-panjang"} = {}) {
         getProperty: key => (key in state.scriptProps ? state.scriptProps[key] : null)
       })
     },
-    Utilities: {getUuid: () => `uuid-${++state.uuid}`},
+    Utilities: {
+      getUuid: () => `uuid-${++state.uuid}`,
+      Charset: {UTF_8: "UTF_8"},
+      DigestAlgorithm: {SHA_256: "SHA_256"},
+      // GAS mengembalikan byte bertanda (-128..127); stub ini meniru bentuknya.
+      computeDigest: value =>
+        Array.from(createHash("sha256").update(String(value), "utf8").digest()).map(b => (b > 127 ? b - 256 : b))
+    },
     LockService: {
       getScriptLock: () => ({
         tryLock() {

@@ -766,24 +766,90 @@ export function CustomersPage() {
   );
 }
 
-export function StaffPage() {
+const STAFF_ROLES = ["Kasir", "Manager", "Kitchen", "Waiter", "Barista", "Staff"];
+
+type StaffDraft = {
+  id?: string;
+  name: string;
+  role: string;
+  pin: string;
+  active: boolean;
+};
+
+export function StaffPage({notify}: {notify: (message: string) => void}) {
   const staffRes = useResource<GasStaff[]>(() => gasCall<GasStaff[]>("getStaff"), 120_000);
   const rows = staffRes.data || [];
+  const [draft, setDraft] = useState<StaffDraft | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (!draft || busy) return;
+    setBusy(true);
+    try {
+      await gasCall("saveStaff", {
+        id: draft.id,
+        name: draft.name,
+        role: draft.role,
+        pin: draft.pin,
+        active: draft.active
+      });
+      setDraft(null);
+      staffRes.reload();
+      notify("Staff tersimpan");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Gagal menyimpan staff");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (row: GasStaff) => {
+    if (!window.confirm(`Hapus staff "${row.name}"?`)) return;
+    try {
+      await gasCall("deleteData", {sheet: "Staff", id: row.id});
+      staffRes.reload();
+      notify("Staff dihapus");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Gagal menghapus");
+    }
+  };
+
+  const toggleActive = async (row: GasStaff) => {
+    try {
+      await gasCall("saveStaff", {id: row.id, name: row.name, role: row.role, active: row.active === false});
+      staffRes.reload();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Gagal mengubah status staff");
+    }
+  };
 
   return (
     <div className="card glass">
       <div className="split">
         <div>
-          <h2>Staff & Shift</h2>
-          <p className="muted">Kelola langsung di sheet Staff (kolom pinHash untuk PIN kasir)</p>
+          <h2>Staff &amp; Shift</h2>
+          <p className="muted">{rows.length} staff • PIN kasir tersimpan sebagai hash, tidak bisa dilihat ulang</p>
         </div>
-        <button type="button" className="iconBtn" aria-label="Muat ulang" onClick={staffRes.reload}>
-          <RefreshCw size={16} aria-hidden="true" />
-        </button>
+        <div className="btnRow">
+          <button type="button" className="iconBtn" aria-label="Muat ulang" onClick={staffRes.reload}>
+            <RefreshCw size={16} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => setDraft({name: "", role: "Kasir", pin: "", active: true})}
+          >
+            <Plus size={15} aria-hidden="true" /> Staff
+          </button>
+        </div>
       </div>
+
       {staffRes.error ? <ErrorState message={staffRes.error} setup={staffRes.setup} onRetry={staffRes.reload} /> : null}
       {staffRes.loading && !rows.length ? <Skeleton /> : null}
-      {rows.length === 0 && !staffRes.error && !staffRes.loading ? <EmptyState message="Belum ada staff terdaftar." /> : null}
+      {rows.length === 0 && !staffRes.error && !staffRes.loading ? (
+        <EmptyState message="Belum ada staff. Tambahkan staff pertama lewat tombol + Staff." />
+      ) : null}
+
       {rows.length ? (
         <div className="tableWrap">
           <table className="data">
@@ -791,24 +857,101 @@ export function StaffPage() {
               <tr>
                 <th scope="col">Nama</th>
                 <th scope="col">Role</th>
+                <th scope="col">PIN</th>
                 <th scope="col">Status</th>
+                <th scope="col">Aksi</th>
               </tr>
             </thead>
             <tbody>
               {rows.map(row => (
                 <tr key={row.id}>
-                  <td><b>{row.name}</b></td>
-                  <td>{row.role || "staff"}</td>
                   <td>
-                    <span className={`badge ${row.active !== false ? "green" : "red"}`}>
+                    <b>{row.name}</b>
+                  </td>
+                  <td>{row.role || "staff"}</td>
+                  <td>{row.pinHash ? <span className="badge green">Terpasang</span> : <span className="badge">Belum</span>}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className={`badge ${row.active !== false ? "green" : "red"}`}
+                      onClick={() => toggleActive(row)}
+                      aria-label={`Ubah status ${row.name}`}
+                    >
                       {row.active !== false ? "AKTIF" : "OFF"}
-                    </span>
+                    </button>
+                  </td>
+                  <td>
+                    <div className="btnRow">
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() =>
+                          setDraft({id: row.id, name: row.name, role: row.role || "Kasir", pin: "", active: row.active !== false})
+                        }
+                      >
+                        Edit
+                      </button>
+                      <button type="button" className="btn danger" onClick={() => remove(row)}>
+                        Hapus
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      ) : null}
+
+      {draft ? (
+        <Modal title={draft.id ? "Edit Staff" : "Staff Baru"} onClose={() => setDraft(null)}>
+          <div className="formGrid">
+            <Field label="Nama staff">
+              <input
+                className="input"
+                value={draft.name}
+                maxLength={80}
+                onChange={e => setDraft({...draft, name: e.target.value})}
+              />
+            </Field>
+            <Field label="Role">
+              <select className="input" value={draft.role} onChange={e => setDraft({...draft, role: e.target.value})}>
+                {STAFF_ROLES.map(role => (
+                  <option key={role} value={role}>
+                    {role}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={draft.id ? "PIN baru (kosongkan bila tidak diubah)" : "PIN kasir (4-8 digit, opsional)"}>
+              <input
+                className="input"
+                inputMode="numeric"
+                value={draft.pin}
+                maxLength={8}
+                placeholder="••••"
+                autoComplete="off"
+                onChange={e => setDraft({...draft, pin: e.target.value.replace(/[^\d]/g, "")})}
+              />
+            </Field>
+          </div>
+          <label className="split rowLine" style={{marginTop: 8}}>
+            <span>Staff aktif</span>
+            <input type="checkbox" checked={draft.active} onChange={e => setDraft({...draft, active: e.target.checked})} />
+          </label>
+          <p className="muted" style={{fontSize: 12, marginTop: 10}}>
+            PIN disimpan sebagai hash — tidak bisa dilihat kembali setelah disimpan. Untuk mengganti, isi PIN baru.
+          </p>
+          <button
+            type="button"
+            className="btn primary fullWidth"
+            style={{marginTop: 10}}
+            disabled={busy || !draft.name.trim()}
+            onClick={save}
+          >
+            {busy ? "Menyimpan..." : "Simpan Staff"}
+          </button>
+        </Modal>
       ) : null}
     </div>
   );
