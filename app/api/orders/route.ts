@@ -59,13 +59,16 @@ export async function POST(req: Request) {
       if (!rateLimit(clientKey(req, "orders:req"), 120, 60_000)) {
         throw new HttpError("Terlalu banyak permintaan", 429);
       }
-      const payload = sanitizeCreateOrder(raw.payload ?? raw);
+      const admin = await assertActionAllowed(action, req);
+      const payload = sanitizeCreateOrder(raw.payload ?? raw, {admin});
       // Batas kedua hanya untuk pesanan yang benar-benar diteruskan ke Apps Script,
       // supaya salah input tidak menghabiskan kuota pelanggan (WiFi restoran = satu IP).
       if (!rateLimit(clientKey(req, "orders:create"), 30, 60_000)) {
         throw new HttpError("Terlalu banyak pesanan dari jaringan ini, coba lagi sebentar", 429);
       }
-      const data = await callGas("createOrder", payload as unknown as Record<string, unknown>);
+      const gasPayload = payload as unknown as Record<string, unknown>;
+      gasPayload._admin = admin;
+      const data = await callGas("createOrder", gasPayload);
       return NextResponse.json(data, {status: 201, headers: noStore});
     }
 

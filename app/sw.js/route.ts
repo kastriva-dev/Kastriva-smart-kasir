@@ -3,14 +3,17 @@
  * tanpa file statis terpisah.
  *
  * Strategi:
- * - Request non-GET, /api/*, dan permintaan dengan Range diabaikan (tidak boleh masuk cache).
+ * - Request non-GET, mutasi /api/*, dan permintaan dengan Range diabaikan.
  * - Navigasi: network-first, fallback ke cache lalu halaman /offline.
  * - Aset build (_next/static, ikon, gambar): cache-first karena namanya sudah ter-hash.
+ * - Menu publik (GET /api/orders?action=getMenu): network-first dengan fallback cache
+ *   agar digital menu tetap tampil saat koneksi restoran putus.
  */
 const SW = `
-const VERSION = 'kastriva-v3';
+const VERSION = 'kastriva-v4';
 const SHELL = VERSION + '-shell';
 const ASSETS = VERSION + '-assets';
+const MENU_CACHE = VERSION + '-menu';
 const OFFLINE_URL = '/offline';
 
 self.addEventListener('install', event => {
@@ -38,6 +41,10 @@ function isCacheableAsset(url) {
     || url.pathname === '/manifest.webmanifest';
 }
 
+function isPublicMenu(url) {
+  return url.pathname === '/api/orders' && url.search.indexOf('action=getMenu') !== -1;
+}
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
@@ -45,8 +52,9 @@ self.addEventListener('fetch', event => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
-  // Data pesanan/menu tidak boleh disajikan dari cache: kasir harus melihat kondisi terbaru.
-  if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js') return;
+  if (url.pathname === '/sw.js') return;
+  // Data transaksional tidak boleh disajikan dari cache: kasir harus melihat kondisi terbaru.
+  if (url.pathname.startsWith('/api/') && !isPublicMenu(url)) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(
@@ -61,6 +69,26 @@ self.addEventListener('fetch', event => {
             offline || new Response('Offline', {status: 503, headers: {'Content-Type': 'text/plain'}})
           ))
         )
+    );
+    return;
+  }
+
+  if (isPublicMenu(url)) {
+    event.respondWith(
+      fetch(request)
+        .then(response => {
+          if (response && response.status === 200) {
+            const copy = response.clone();
+            caches.open(MENU_CACHE).then(cache => cache.put(request, copy)).catch(() => {});
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then(cached =>
+          cached || new Response(JSON.stringify({ok: false, error: 'Offline: menu belum pernah dimuat'}), {
+            status: 503,
+            headers: {'Content-Type': 'application/json'}
+          })
+        ))
     );
     return;
   }

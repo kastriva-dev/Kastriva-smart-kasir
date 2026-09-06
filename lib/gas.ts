@@ -1,4 +1,7 @@
 import {createHash, timingSafeEqual} from "node:crypto";
+// Import dengan ekstensi .ts supaya modul ini juga bisa dijalankan langsung
+// oleh test runner Node (strip-types butuh ekstensi eksplisit).
+import {SESSION_COOKIE, verifySession} from "./session.ts";
 
 /**
  * Server-side client untuk Google Apps Script.
@@ -28,6 +31,7 @@ export type CreateOrderInput = {
   phone?: string;
   channel?: string;
   note?: string;
+  discount?: number;
   items: OrderItemInput[];
 };
 
@@ -37,26 +41,37 @@ const ADMIN_TOKEN = (process.env.ADMIN_API_TOKEN || "").trim();
 const TIMEOUT_MS = clamp(Number(process.env.GAS_TIMEOUT_MS) || 15000, 1000, 60000);
 
 /** Action yang boleh dipanggil browser tanpa kredensial. */
-export const PUBLIC_ACTIONS = new Set(["health", "getMenu", "getTables", "createOrder"]);
+export const PUBLIC_ACTIONS = new Set(["health", "getMenu", "getTables", "getSettings", "createOrder"]);
 
-/** Action yang mengubah data / membaca data sensitif: wajib ADMIN_API_TOKEN. */
+/** Action yang mengubah data / membaca data sensitif: wajib admin. */
 export const ADMIN_ACTIONS = new Set([
   "getOrders",
   "getOrder",
   "updateOrderStatus",
+  "payOrder",
   "getCustomers",
   "getInventory",
   "getReservations",
+  "getStaff",
+  "getCategories",
+  "getReport",
   "saveMenu",
+  "saveCategory",
   "saveTable",
   "saveInventory",
   "saveReservation",
+  "saveCustomer",
+  "saveSettings",
+  "deleteData",
   "deleteMenu",
   "audit"
 ]);
 
 export const ORDER_STATUSES = ["NEW", "CONFIRMED", "COOKING", "READY", "SERVED", "PAID", "CANCELLED"] as const;
 export const ORDER_CHANNELS = ["POS", "QR", "WA"] as const;
+export const PAYMENT_METHODS = ["CASH", "QRIS", "DEBIT", "EWALLET", "TRANSFER"] as const;
+/** Sheet yang boleh menjadi target deleteData — harus sama dengan DELETABLE_SHEETS di Code.gs. */
+export const DELETABLE_SHEETS = ["Menu", "Tables", "Inventory", "Reservations", "Customers", "Staff"] as const;
 
 export class HttpError extends Error {
   status: number;
@@ -82,25 +97,44 @@ function safeEqual(a: string, b: string) {
   return timingSafeEqual(ha, hb);
 }
 
-export function hasAdminAccess(req: Request) {
-  if (!ADMIN_TOKEN) return false;
+function readSessionCookie(req: Request): string {
+  const header = req.headers.get("cookie") || "";
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    if (part.slice(0, idx).trim() === SESSION_COOKIE) return part.slice(idx + 1).trim();
+  }
+  return "";
+}
+
+/**
+ * Admin menurut request ini:
+ * 1. token mesin (x-admin-token / Bearer ADMIN_API_TOKEN) untuk integrasi non-browser, atau
+ * 2. cookie session login dari middleware (halaman internal).
+ * Dengan ini UI admin tidak perlu mengetahui ADMIN_API_TOKEN.
+ */
+export async function hasAdminAccess(req: Request): Promise<boolean> {
   const header = req.headers.get("x-admin-token") || "";
   const auth = req.headers.get("authorization") || "";
   const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
   const sent = (header || bearer).trim();
-  if (!sent) return false;
-  return safeEqual(sent, ADMIN_TOKEN);
+  if (sent && ADMIN_TOKEN && safeEqual(sent, ADMIN_TOKEN)) return true;
+  if (!ADMIN_TOKEN) return false; // mode mesin dimatikan: hanya session yang sah
+
+  const session = await verifySession(readSessionCookie(req));
+  return Boolean(session);
 }
 
-/** Menolak action yang tidak dikenal, dan action admin tanpa token yang valid. */
-export function assertActionAllowed(action: string, req: Request) {
+/** Menolak action yang tidak dikenal, dan action admin tanpa kredensial yang valid. */
+export async function assertActionAllowed(action: string, req: Request): Promise<boolean> {
   if (!action || !isKnownAction(action)) {
     throw new HttpError(`Action tidak diizinkan: ${String(action).slice(0, 40)}`, 400);
   }
   if (ADMIN_ACTIONS.has(action)) {
     if (!ADMIN_TOKEN) throw new HttpError("ADMIN_API_TOKEN belum dikonfigurasi di server", 503);
-    if (!hasAdminAccess(req)) throw new HttpError("Unauthorized", 401);
+    if (!(await hasAdminAccess(req))) throw new HttpError("Unauthorized", 401);
   }
+  return hasAdminAccess(req);
 }
 
 export async function callGas<T = unknown>(action: string, payload: Record<string, unknown> = {}) {
@@ -140,11 +174,17 @@ function str(value: unknown, max: number) {
   return String(value).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
 }
 
+function num(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 /**
  * Membersihkan payload createOrder dari client.
  * Harga sengaja TIDAK diambil dari client; Apps Script menghitung ulang dari sheet Menu.
+ * Diskon hanya diteruskan untuk request admin ({admin: true}) — pelanggan publik selalu 0.
  */
-export function sanitizeCreateOrder(input: unknown): CreateOrderInput {
+export function sanitizeCreateOrder(input: unknown, opts: {admin?: boolean} = {}): CreateOrderInput {
   if (!input || typeof input !== "object") throw new HttpError("Payload pesanan tidak valid", 400);
   const raw = input as Record<string, unknown>;
   const rawItems = Array.isArray(raw.items) ? raw.items : [];
@@ -165,6 +205,8 @@ export function sanitizeCreateOrder(input: unknown): CreateOrderInput {
 
   const channel = str(raw.channel, 8).toUpperCase();
   const phone = str(raw.phone, 20).replace(/[^\d+]/g, "");
+  const discountRaw = num(raw.discount);
+  const discount = opts.admin && Number.isFinite(discountRaw) ? clamp(Math.round(discountRaw), 0, 100_000_000) : 0;
 
   return {
     storeId: str(raw.storeId, 64),
@@ -174,6 +216,7 @@ export function sanitizeCreateOrder(input: unknown): CreateOrderInput {
     phone,
     note: str(raw.note, 300),
     channel: (ORDER_CHANNELS as readonly string[]).includes(channel) ? channel : "QR",
+    discount,
     items
   };
 }
@@ -185,6 +228,47 @@ export function sanitizeStatusUpdate(input: unknown) {
   if (!id) throw new HttpError("id pesanan wajib diisi", 400);
   if (!(ORDER_STATUSES as readonly string[]).includes(status)) throw new HttpError("Status pesanan tidak valid", 400);
   return {id, status, userId: str(raw.userId, 64) || "staff"};
+}
+
+export function sanitizePayOrder(input: unknown) {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const id = str(raw.id, 64);
+  const method = str(raw.method, 16).toUpperCase();
+  if (!id) throw new HttpError("id pesanan wajib diisi", 400);
+  if (!(PAYMENT_METHODS as readonly string[]).includes(method)) {
+    throw new HttpError("Metode pembayaran tidak valid", 400);
+  }
+  const paidRaw = num(raw.paidAmount);
+  const paidAmount = Number.isFinite(paidRaw) ? clamp(Math.round(paidRaw), 0, 1_000_000_000) : 0;
+  return {id, method, paidAmount, userId: str(raw.userId, 64) || "staff"};
+}
+
+export function sanitizeSaveSettings(input: unknown) {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {storeId: str(raw.storeId, 64)};
+  if (raw.name !== undefined) out.name = str(raw.name, 120);
+  if (raw.phone !== undefined) out.phone = str(raw.phone, 20).replace(/[^\d+]/g, "");
+  if (raw.address !== undefined) out.address = str(raw.address, 300);
+  if (raw.taxRate !== undefined) {
+    const n = num(raw.taxRate);
+    out.taxRate = Number.isFinite(n) ? clamp(n, 0, 100) : 0;
+  }
+  if (raw.serviceRate !== undefined) {
+    const n = num(raw.serviceRate);
+    out.serviceRate = Number.isFinite(n) ? clamp(n, 0, 100) : 0;
+  }
+  return out;
+}
+
+export function sanitizeDeleteData(input: unknown) {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const sheet = str(raw.sheet, 32);
+  if (!(DELETABLE_SHEETS as readonly string[]).includes(sheet)) {
+    throw new HttpError("Sheet tidak boleh dihapus lewat API", 400);
+  }
+  const id = str(raw.id, 64);
+  if (!id) throw new HttpError("Parameter id wajib diisi", 400);
+  return {sheet, id};
 }
 
 /**

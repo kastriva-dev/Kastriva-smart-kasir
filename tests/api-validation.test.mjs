@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 process.env.ADMIN_API_TOKEN = "token-admin-uji";
+process.env.AUTH_SECRET = "secret-uji-panjang-minimal-32-karakter";
 
 const {
   ADMIN_ACTIONS,
@@ -15,34 +16,62 @@ const {
   isKnownAction,
   rateLimit,
   sanitizeCreateOrder,
+  sanitizeDeleteData,
+  sanitizePayOrder,
+  sanitizeSaveSettings,
   sanitizeStatusUpdate
 } = await import("../lib/gas.ts");
+const {signSession, SESSION_COOKIE} = await import("../lib/session.ts");
 
 const req = (headers = {}) => new Request("http://localhost/api/orders", {headers});
 
 test("allowlist action", () => {
   assert.equal(isKnownAction("createOrder"), true);
   assert.equal(isKnownAction("getMenu"), true);
+  assert.equal(isKnownAction("getSettings"), true);
+  assert.equal(isKnownAction("payOrder"), true);
   assert.equal(isKnownAction("dropDatabase"), false);
   assert.equal(isKnownAction(""), false);
   assert.equal(PUBLIC_ACTIONS.has("deleteMenu"), false);
   assert.equal(ADMIN_ACTIONS.has("deleteMenu"), true);
+  assert.equal(ADMIN_ACTIONS.has("getSettings"), false, "getSettings harus publik");
 });
 
-test("action publik tidak butuh token, action admin butuh token", () => {
-  assert.doesNotThrow(() => assertActionAllowed("createOrder", req()));
-  assert.throws(() => assertActionAllowed("deleteMenu", req()), /Unauthorized/);
-  assert.throws(() => assertActionAllowed("deleteMenu", req({"x-admin-token": "salah"})), /Unauthorized/);
-  assert.doesNotThrow(() => assertActionAllowed("deleteMenu", req({"x-admin-token": "token-admin-uji"})));
-  assert.doesNotThrow(() => assertActionAllowed("deleteMenu", req({authorization: "Bearer token-admin-uji"})));
-  assert.throws(() => assertActionAllowed("rm -rf", req({"x-admin-token": "token-admin-uji"})), /tidak diizinkan/);
+test("action publik tidak butuh token, action admin butuh kredensial", async () => {
+  await assert.doesNotReject(() => assertActionAllowed("createOrder", req()));
+  await assert.rejects(() => assertActionAllowed("deleteMenu", req()), /Unauthorized/);
+  await assert.rejects(() => assertActionAllowed("deleteMenu", req({"x-admin-token": "salah"})), /Unauthorized/);
+  await assert.doesNotReject(() => assertActionAllowed("deleteMenu", req({"x-admin-token": "token-admin-uji"})));
+  await assert.doesNotReject(() =>
+    assertActionAllowed("deleteMenu", req({authorization: "Bearer token-admin-uji"}))
+  );
+  await assert.rejects(
+    () => assertActionAllowed("rm -rf", req({"x-admin-token": "token-admin-uji"})),
+    /tidak diizinkan/
+  );
 });
 
-test("hasAdminAccess menolak token kosong dan salah panjang", () => {
-  assert.equal(hasAdminAccess(req()), false);
-  assert.equal(hasAdminAccess(req({"x-admin-token": ""})), false);
-  assert.equal(hasAdminAccess(req({"x-admin-token": "token-admin-uji-lebih-panjang"})), false);
-  assert.equal(hasAdminAccess(req({"x-admin-token": "token-admin-uji"})), true);
+test("hasAdminAccess menolak token kosong dan salah panjang", async () => {
+  assert.equal(await hasAdminAccess(req()), false);
+  assert.equal(await hasAdminAccess(req({"x-admin-token": ""})), false);
+  assert.equal(await hasAdminAccess(req({"x-admin-token": "token-admin-uji-lebih-panjang"})), false);
+  assert.equal(await hasAdminAccess(req({"x-admin-token": "token-admin-uji"})), true);
+});
+
+test("session login sah dihitung sebagai admin (UI tidak perlu token)", async () => {
+  const token = await signSession({sub: "admin", role: "admin"});
+  const authed = req({cookie: `${SESSION_COOKIE}=${token}`});
+  assert.equal(await hasAdminAccess(authed), true);
+  await assert.doesNotReject(() => assertActionAllowed("getOrders", authed));
+
+  const forged = req({cookie: `${SESSION_COOKIE}=${token.slice(0, -2)}xx`});
+  assert.equal(await hasAdminAccess(forged), false);
+});
+
+test("assertActionAllowed mengembalikan status admin untuk penandaan _admin", async () => {
+  assert.equal(await assertActionAllowed("createOrder", req()), false, "publik bukan admin");
+  assert.equal(await assertActionAllowed("createOrder", req({"x-admin-token": "token-admin-uji"})), true);
+  assert.equal(await assertActionAllowed("getMenu", req()), false);
 });
 
 test("sanitizeCreateOrder membuang harga dari client", () => {
@@ -54,6 +83,14 @@ test("sanitizeCreateOrder membuang harga dari client", () => {
   assert.equal("price" in out.items[0], false, "price tidak boleh diteruskan");
   assert.equal(out.items[0].qty, 2);
   assert.equal(out.channel, "QR");
+  assert.equal(out.discount, 0, "pelanggan publik tidak boleh mengirim diskon");
+});
+
+test("diskon hanya diteruskan untuk request admin", () => {
+  const payload = {discount: 25000, items: [{menuItemId: "m1", qty: 1}]};
+  assert.equal(sanitizeCreateOrder(payload).discount, 0, "publik: diskon dibuang");
+  assert.equal(sanitizeCreateOrder(payload, {admin: true}).discount, 25000, "admin: diskon diteruskan");
+  assert.equal(sanitizeCreateOrder({discount: -5, items: [{menuItemId: "m1", qty: 1}]}, {admin: true}).discount, 0);
 });
 
 test("sanitizeCreateOrder menolak input tidak valid", () => {
@@ -93,6 +130,32 @@ test("sanitizeStatusUpdate memvalidasi status", () => {
   });
   assert.throws(() => sanitizeStatusUpdate({status: "PAID"}), /id pesanan/);
   assert.throws(() => sanitizeStatusUpdate({id: "ORD-1", status: "HACKED"}), /tidak valid/);
+});
+
+test("sanitizePayOrder memvalidasi metode & nominal", () => {
+  assert.deepEqual(sanitizePayOrder({id: "ORD-1", method: "qris"}), {
+    id: "ORD-1",
+    method: "QRIS",
+    paidAmount: 0,
+    userId: "staff"
+  });
+  assert.equal(sanitizePayOrder({id: "ORD-1", method: "CASH", paidAmount: 100500}).paidAmount, 100500);
+  assert.throws(() => sanitizePayOrder({id: "ORD-1", method: "JUMBO"}), /Metode pembayaran/);
+  assert.throws(() => sanitizePayOrder({method: "CASH"}), /id pesanan/);
+});
+
+test("sanitizeDeleteData hanya mengizinkan sheet whitelist", () => {
+  assert.deepEqual(sanitizeDeleteData({sheet: "Menu", id: "m1"}), {sheet: "Menu", id: "m1"});
+  assert.throws(() => sanitizeDeleteData({sheet: "Orders", id: "o1"}), /whitelist|tidak boleh/i);
+  assert.throws(() => sanitizeDeleteData({sheet: "Menu"}), /id wajib/);
+});
+
+test("sanitizeSaveSettings membersihkan tarif", () => {
+  const out = sanitizeSaveSettings({name: " Kafe Kita ", phone: "0811-a", taxRate: 11, serviceRate: -3});
+  assert.equal(out.name, "Kafe Kita");
+  assert.equal(out.phone, "0811");
+  assert.equal(out.taxRate, 11);
+  assert.equal(out.serviceRate, 0, "tarif negatif dipangkas ke 0");
 });
 
 test("rateLimit menghitung per kunci dan reset setelah jendela", async () => {

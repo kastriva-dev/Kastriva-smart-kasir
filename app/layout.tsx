@@ -1,6 +1,7 @@
 import "./globals.css";
 import type {Metadata, Viewport} from "next";
 import PwaRegister from "@/components/PwaRegister";
+import PwaInstall from "@/components/PwaInstall";
 import {STORE_NAME} from "@/lib/data";
 
 export const metadata: Metadata = {
@@ -8,6 +9,11 @@ export const metadata: Metadata = {
   description: "Enterprise restaurant POS, QR ordering dan PWA",
   applicationName: STORE_NAME,
   manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Kastriva"
+  },
   icons: {
     icon: [
       {url: "/icons/favicon-16x16.png", sizes: "16x16", type: "image/png"},
@@ -20,7 +26,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: "#06111f",
   width: "device-width",
-  initialScale: 1
+  initialScale: 1,
+  viewportFit: "cover"
 };
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
@@ -28,6 +35,7 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
     <html lang="id">
       <body>
         <PwaRegister />
+        <PwaInstall />
         {children}
       </body>
     </html>

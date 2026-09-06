@@ -41,13 +41,35 @@ per IP setiap 15 menit, respons gagal ditahan minimal 400 ms, dan permintaan den
 
 | Kelompok | Action | Kredensial |
 | --- | --- | --- |
-| Publik | `health`, `getMenu`, `getTables`, `createOrder` | tidak perlu |
-| Admin | `getOrders`, `getOrder`, `updateOrderStatus`, `getCustomers`, `getInventory`, `getReservations`, `saveMenu`, `saveTable`, `saveInventory`, `saveReservation`, `deleteMenu`, `audit` | header `x-admin-token` atau `Authorization: Bearer <ADMIN_API_TOKEN>` |
+| Publik | `health`, `getMenu`, `getTables`, `getSettings`, `createOrder` | tidak perlu |
+| Admin | `getOrders`, `getOrder`, `updateOrderStatus`, `payOrder`, `getCustomers`, `getInventory`, `getReservations`, `getStaff`, `getCategories`, `getReport`, `saveMenu`, `saveCategory`, `saveTable`, `saveInventory`, `saveReservation`, `saveCustomer`, `saveSettings`, `deleteData`, `deleteMenu`, `audit` | header `x-admin-token` / `Authorization: Bearer <ADMIN_API_TOKEN>` **atau** cookie session login |
 
-Action di luar daftar itu ditolak dengan 400 sebelum menyentuh Apps Script.
+UI admin memakai cookie session — `ADMIN_API_TOKEN` hanya untuk integrasi non-browser
+(skor, dashboard pihak ketiga, skrip). Action di luar daftar ditolak 400 sebelum menyentuh
+Apps Script.
 
 Harga tidak pernah dipercaya dari client: `createOrder` hanya menerima `menuItemId` dan `qty`,
-lalu Apps Script menghitung ulang subtotal, pajak, dan service dari sheet `Menu` + `Stores`.
+lalu Apps Script menghitung ulang subtotal, pajak, service, dan stok dari sheet. Diskon hanya
+dihormati bila proxy server menandai payload `_admin` (request dari kasir yang sedang login);
+pelanggan QR selalu diskon 0. Stok menu yang terlacak otomatis berkurang dan order dengan stok
+kurang ditolak.
+
+### Fitur kasir (halaman internal)
+
+- **POS**: grid menu real-time dengan indikator stok, filter kategori, pencarian, diskon nominal,
+  pilihan meja/takeaway, pesanan ditahan (hold/recall di localStorage).
+- **Pembayaran**: Tunai (hitung kembalian + tombol nominal cepat), QRIS, Debit/Kartu, E-Wallet,
+  Transfer — dicatat via action `payOrder`, status otomatis `PAID`.
+- **Struk**: modal struk siap cetak (CSS `@media print`), data pembayaran & kembalian ikut.
+- **Pesanan**: antrian omnichannel dengan filter status, pencarian, rincian item, ubah status,
+  dan pembayaran lanjutan untuk order yang belum lunas.
+- **Dapur (KDS)**: 4 kolom status, umur tiket, tiket >15 menit disorot merah, tombol lanjut status.
+- **Meja**: status okupansi otomatis dari pesanan aktif, QR per meja, tambah/kosongkan meja.
+- **Menu/Inventory/Reservasi**: CRUD langsung ke sheet via `saveMenu`, `saveCategory`,
+  `saveInventory`, `saveReservation`, `deleteData` (whitelist sheet).
+- **Laporan**: rekap hari ini/7/30 hari dari action `getReport` — net sales, pajak, service,
+  payment mix, menu terlaris, tren harian, export CSV.
+- **Pengaturan**: nama toko, pajak, service charge tersimpan ke sheet Stores via `saveSettings`.
 
 ## Menyiapkan login
 
@@ -142,15 +164,16 @@ rincian pesanan. Isi keranjang disimpan di `localStorage` agar tidak hilang saat
 
 - Rate limit pada route API dan login bersifat per instance proses (best effort), bukan pengganti WAF.
   Untuk beban tinggi gunakan rate limit terdistribusi (mis. Upstash/Vercel KV).
-- Halaman admin `/` masih memakai data contoh dari `lib/data.ts` untuk tampilan;
-  jalur tulis yang sesungguhnya sudah lewat Apps Script.
+- PWA: installable (kartu instalasi otomatis), shell offline, dan menu publik ter-cache network-first.
+  Order pelanggan yang dibuat saat offline masuk antrean localStorage dan terkirim otomatis ketika
+  koneksi kembali.
 - Login memakai satu akun admin dari environment variable. Untuk beberapa staf dengan peran
   berbeda (kasir, dapur, manajer), sheet `Staff` sudah punya kolom `role` dan `pinHash`
   sebagai dasar pengembangan berikutnya.
 - Mengganti `AUTH_SECRET` otomatis membatalkan semua session yang sedang berjalan —
   pakai itu bila perlu memaksa semua perangkat logout.
 - Google Apps Script + Sheets punya kuota harian. Cocok untuk restoran kecil/menengah;
-  untuk multi-cabang dengan traffic besar gunakan database dedicated (lihat `supabase/schema.sql`).
+  untuk multi-cabang dengan traffic besar gunakan database dedicated.
 
 ## Logo
 

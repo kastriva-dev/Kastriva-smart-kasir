@@ -7,6 +7,9 @@ import {
   HttpError,
   rateLimit,
   sanitizeCreateOrder,
+  sanitizeDeleteData,
+  sanitizePayOrder,
+  sanitizeSaveSettings,
   sanitizeStatusUpdate
 } from "@/lib/gas";
 
@@ -18,11 +21,14 @@ const noStore = {"Cache-Control": "no-store, max-age=0"};
 /**
  * Proxy generik ke Google Apps Script.
  * Hanya action yang ada di allowlist yang diteruskan, dan action admin
- * membutuhkan header x-admin-token (lihat lib/gas.ts).
+ * membutuhkan token mesin atau session login (lihat lib/gas.ts).
+ *
+ * Payload diberi flag `_admin` yang dihitung di server: browser tidak bisa
+ * mengirimnya, dan hanya request admin yang boleh membawa diskon ke GAS.
  */
 export async function POST(req: Request) {
   try {
-    if (!rateLimit(clientKey(req, "gas"), 60, 60_000)) throw new HttpError("Terlalu banyak permintaan", 429);
+    if (!rateLimit(clientKey(req, "gas"), 120, 60_000)) throw new HttpError("Terlalu banyak permintaan", 429);
 
     let body: unknown;
     try {
@@ -33,15 +39,24 @@ export async function POST(req: Request) {
 
     const raw = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
     const action = String(raw.action || "");
-    assertActionAllowed(action, req);
+    const admin = await assertActionAllowed(action, req);
 
     const rawPayload = (raw.payload && typeof raw.payload === "object" ? raw.payload : {}) as Record<string, unknown>;
-    const payload =
-      action === "createOrder"
-        ? (sanitizeCreateOrder(rawPayload) as unknown as Record<string, unknown>)
-        : action === "updateOrderStatus"
-          ? (sanitizeStatusUpdate(rawPayload) as unknown as Record<string, unknown>)
-          : rawPayload;
+    let payload: Record<string, unknown>;
+    if (action === "createOrder") {
+      payload = sanitizeCreateOrder(rawPayload, {admin}) as unknown as Record<string, unknown>;
+      payload._admin = admin;
+    } else if (action === "updateOrderStatus") {
+      payload = sanitizeStatusUpdate(rawPayload) as unknown as Record<string, unknown>;
+    } else if (action === "payOrder") {
+      payload = sanitizePayOrder(rawPayload) as unknown as Record<string, unknown>;
+    } else if (action === "saveSettings") {
+      payload = sanitizeSaveSettings(rawPayload) as unknown as Record<string, unknown>;
+    } else if (action === "deleteData") {
+      payload = sanitizeDeleteData(rawPayload) as unknown as Record<string, unknown>;
+    } else {
+      payload = rawPayload;
+    }
 
     const data = await callGas(action, payload);
     return NextResponse.json(data, {status: action === "createOrder" ? 201 : 200, headers: noStore});

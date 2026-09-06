@@ -14,6 +14,9 @@
  *
  * Catatan keamanan: "Anyone" hanya berarti endpoint dapat diakses;
  * setiap request masih harus menyertakan key yang cocok.
+ *
+ * Flag `_admin`: hanya boleh disetel oleh proxy Next.js (server), bukan browser.
+ * Bila true, payload createOrder boleh membawa `discount`, dan action admin tersedia.
  */
 
 var SHEETS = {
@@ -31,12 +34,15 @@ var SHEETS = {
   SETTINGS: 'Settings'
 };
 
+// Kolom baru Orders (paymentMethod, paidAmount, changeAmount) sengaja diurutan
+// terakhir: setupDatabase menambahkan kolom yang hilang di belakang, jadi database
+// lama maupun baru selalu punya urutan kolom yang cocok dengan daftar ini.
 var HEADERS = {
   Stores: ['id','name','slug','phone','address','taxRate','serviceRate','createdAt'],
   Tables: ['id','storeId','code','seats','status','createdAt'],
   Categories: ['id','storeId','name','sortOrder','active'],
   Menu: ['id','storeId','categoryId','name','description','price','cost','stock','active','emoji','imageUrl','createdAt','updatedAt'],
-  Orders: ['id','storeId','tableId','tableCode','customerName','phone','channel','status','subtotal','discount','tax','service','total','note','createdAt','updatedAt'],
+  Orders: ['id','storeId','tableId','tableCode','customerName','phone','channel','status','subtotal','discount','tax','service','total','note','createdAt','updatedAt','paymentMethod','paidAmount','changeAmount'],
   OrderItems: ['id','orderId','menuItemId','name','price','qty','note'],
   Customers: ['id','storeId','name','phone','email','tier','visits','totalSpend','preferences','createdAt','updatedAt'],
   Reservations: ['id','storeId','guestName','phone','partySize','reservedAt','status','note','createdAt'],
@@ -48,6 +54,10 @@ var HEADERS = {
 
 var ORDER_STATUSES = ['NEW','CONFIRMED','COOKING','READY','SERVED','PAID','CANCELLED'];
 var ORDER_CHANNELS = ['POS','QR','WA'];
+var PAYMENT_METHODS = ['CASH','QRIS','DEBIT','EWALLET','TRANSFER'];
+var RESERVATION_STATUSES = ['BOOKED','CONFIRMED','SEATED','CANCELLED'];
+// Sheet yang boleh dihapus barisnya lewat action deleteData.
+var DELETABLE_SHEETS = {Menu: true, Tables: true, Inventory: true, Reservations: true, Customers: true, Staff: true};
 var LOCK_TIMEOUT_MS = 20000;
 
 /**
@@ -111,7 +121,9 @@ function dispatch_(action, p) {
     case 'health':
       return {ok: true, service: 'Kastriva GAS', time: iso_()};
     case 'getMenu':
-      return {ok: true, data: listObjects_('Menu').filter(isActive_)};
+      return {ok: true, data: listMenuForClient_()};
+    case 'getSettings':
+      return {ok: true, data: getPublicSettings_()};
     case 'getOrders':
       return {ok: true, data: listOrders_(p)};
     case 'getOrder':
@@ -120,6 +132,8 @@ function dispatch_(action, p) {
       return withLock_(function() { return createOrder_(p); });
     case 'updateOrderStatus':
       return withLock_(function() { return updateOrderStatus_(p); });
+    case 'payOrder':
+      return withLock_(function() { return payOrder_(p); });
     case 'getTables':
       return {ok: true, data: listObjects_('Tables')};
     case 'getCustomers':
@@ -128,14 +142,28 @@ function dispatch_(action, p) {
       return {ok: true, data: listObjects_('Inventory')};
     case 'getReservations':
       return {ok: true, data: listObjects_('Reservations')};
+    case 'getStaff':
+      return {ok: true, data: listObjects_('Staff').map(stripPin_)};
+    case 'getCategories':
+      return {ok: true, data: listObjects_('Categories')};
+    case 'getReport':
+      return {ok: true, data: getReport_(p)};
     case 'saveMenu':
       return withLock_(function() { return upsertObject_('Menu', normalizeMenu_(p)); });
+    case 'saveCategory':
+      return withLock_(function() { return upsertObject_('Categories', normalizeCategory_(p)); });
     case 'saveTable':
-      return withLock_(function() { return upsertObject_('Tables', p); });
+      return withLock_(function() { return upsertObject_('Tables', normalizeTable_(p)); });
     case 'saveInventory':
-      return withLock_(function() { return upsertObject_('Inventory', p); });
+      return withLock_(function() { return upsertObject_('Inventory', normalizeInventory_(p)); });
     case 'saveReservation':
-      return withLock_(function() { return upsertObject_('Reservations', p); });
+      return withLock_(function() { return upsertObject_('Reservations', normalizeReservation_(p)); });
+    case 'saveCustomer':
+      return withLock_(function() { return upsertObject_('Customers', normalizeCustomer_(p)); });
+    case 'saveSettings':
+      return withLock_(function() { return saveSettings_(p); });
+    case 'deleteData':
+      return withLock_(function() { return deleteData_(p); });
     case 'deleteMenu':
       return withLock_(function() { return deleteObject_('Menu', requireId_(p.id)); });
     case 'audit':
@@ -161,16 +189,21 @@ function dispatch_(action, p) {
 /**
  * Membuat order. Harga SELALU dibaca dari sheet Menu, bukan dari client,
  * supaya pelanggan tidak bisa mengirim harga sendiri lewat DevTools.
+ * Diskon hanya dihormati bila payload ditandai `_admin` oleh proxy server.
+ * Stok menu yang terlacak otomatis berkurang; item dengan stok kurang ditolak.
  */
 function createOrder_(p) {
   var items = Array.isArray(p.items) ? p.items : [];
   if (!items.length) throw new Error('Pesanan tidak boleh kosong');
   if (items.length > 60) throw new Error('Terlalu banyak item dalam satu pesanan');
 
+  var trusted = p._admin === true;
   var store = resolveStore_(p.storeId);
-  var menuById = indexBy_(listObjects_('Menu'), 'id');
+  var menuRows = listObjects_('Menu');
+  var menuById = indexBy_(menuRows, 'id');
 
   var subtotal = 0;
+  var stockUsage = {}; // menuItemId -> qty total dalam pesanan ini
   var cleanItems = items.map(function(raw, index) {
     var menuItemId = str_(raw && (raw.menuItemId || raw.id), 64);
     if (!menuItemId) throw new Error('Item #' + (index + 1) + ' tidak memiliki menuItemId');
@@ -183,6 +216,7 @@ function createOrder_(p) {
 
     var price = Number(menuItem.price) || 0;
     subtotal += price * qty;
+    stockUsage[menuItemId] = (stockUsage[menuItemId] || 0) + qty;
     return {
       id: uuid_(),
       menuItemId: menuItemId,
@@ -193,9 +227,24 @@ function createOrder_(p) {
     };
   });
 
+  // Stok terlacak: kolom stock terisi angka. Kosong berarti tidak dipantau.
+  var stockDecimals = {};
+  Object.keys(stockUsage).forEach(function(menuItemId) {
+    var menuItem = menuById[menuItemId];
+    var stock = menuItem.stock;
+    if (stock === '' || stock === null || stock === undefined || !isFinite(Number(stock))) return;
+    var available = Math.floor(Number(stock));
+    var needed = stockUsage[menuItemId];
+    if (available < needed) {
+      throw new Error('Stok tidak cukup untuk ' + menuItem.name + ' (sisa ' + Math.max(available, 0) + ')');
+    }
+    stockDecimals[menuItemId] = available - needed;
+  });
+
   var taxRate = numberOr_(store.taxRate, 0);
   var serviceRate = numberOr_(store.serviceRate, 0);
-  var discount = 0;
+  var requestedDiscount = trusted ? Math.round(Number(p.discount) || 0) : 0;
+  var discount = Math.min(Math.max(requestedDiscount, 0), subtotal);
   var tax = Math.round(subtotal * (taxRate > 1 ? taxRate / 100 : taxRate));
   var service = Math.round(subtotal * (serviceRate > 1 ? serviceRate / 100 : serviceRate));
 
@@ -219,7 +268,10 @@ function createOrder_(p) {
     total: subtotal - discount + tax + service,
     note: str_(p.note, 300),
     createdAt: iso_(),
-    updatedAt: iso_()
+    updatedAt: iso_(),
+    paymentMethod: '',
+    paidAmount: '',
+    changeAmount: ''
   };
 
   appendObject_('Orders', order);
@@ -227,20 +279,73 @@ function createOrder_(p) {
     return Object.assign({orderId: order.id}, item);
   }));
 
+  // Kurangi stok setelah order benar-benar tersimpan.
+  Object.keys(stockDecimals).forEach(function(menuItemId) {
+    var row = findRow_('Menu', menuItemId);
+    if (!row) return;
+    var menuItem = menuById[menuItemId];
+    menuItem.stock = stockDecimals[menuItemId];
+    menuItem.updatedAt = iso_();
+    updateRow_('Menu', row, menuItem);
+  });
+
   if (order.phone) upsertCustomer_(order);
 
   appendObject_('AuditLog', {
     id: uuid_(),
     storeId: order.storeId,
-    userId: 'customer',
+    userId: trusted ? 'staff' : 'customer',
     action: 'CREATE',
     entity: 'ORDER',
     entityId: order.id,
-    detail: JSON.stringify({channel: order.channel, table: order.tableCode, total: order.total}),
+    detail: JSON.stringify({channel: order.channel, table: order.tableCode, total: order.total, discount: order.discount}),
     createdAt: iso_()
   });
 
   return {ok: true, data: Object.assign({}, order, {items: cleanItems})};
+}
+
+/**
+ * Mencatat pembayaran dan menandai order PAID.
+ * Tunai wajib dibayar >= total; metode non-tunai selalu dianggap pas.
+ */
+function payOrder_(p) {
+  var id = requireId_(p.id);
+  var method = String(str_(p.method, 16)).toUpperCase();
+  if (PAYMENT_METHODS.indexOf(method) === -1) throw new Error('Metode pembayaran tidak valid');
+
+  var order = getObject_('Orders', id);
+  if (!order) throw new Error('Order tidak ditemukan');
+  if (String(order.status) === 'CANCELLED') throw new Error('Order sudah dibatalkan');
+
+  var total = Math.round(Number(order.total) || 0);
+  var paid = Math.round(Number(p.paidAmount) || 0);
+  if (method === 'CASH') {
+    if (paid < total) throw new Error('Uang yang dibayar kurang dari total');
+  } else {
+    paid = total;
+  }
+
+  order.paymentMethod = method;
+  order.paidAmount = paid;
+  order.changeAmount = method === 'CASH' ? paid - total : 0;
+  order.status = 'PAID';
+  order.updatedAt = iso_();
+  var row = findRow_('Orders', id);
+  if (row) updateRow_('Orders', row, order);
+
+  appendObject_('AuditLog', {
+    id: uuid_(),
+    storeId: order.storeId,
+    userId: str_(p.userId, 64) || 'staff',
+    action: 'PAYMENT',
+    entity: 'ORDER',
+    entityId: id,
+    detail: JSON.stringify({method: method, total: total, paid: paid, change: order.changeAmount}),
+    createdAt: iso_()
+  });
+
+  return {ok: true, data: order};
 }
 
 function updateOrderStatus_(p) {
@@ -274,13 +379,28 @@ function listOrders_(p) {
   var limit = Math.min(Math.max(Math.floor(Number(p && p.limit) || 200), 1), 1000);
   var storeId = str_(p && p.storeId, 64);
   var status = String(str_(p && p.status, 16)).toUpperCase();
+  var withItems = p && p.withItems === true;
   var rows = listObjects_('Orders');
   if (storeId) rows = rows.filter(function(o) { return String(o.storeId) === storeId; });
   if (status && ORDER_STATUSES.indexOf(status) !== -1) {
     rows = rows.filter(function(o) { return String(o.status).toUpperCase() === status; });
   }
   rows.sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-  return rows.slice(0, limit);
+  rows = rows.slice(0, limit);
+
+  // Sambungkan item dalam satu pembacaan sheet (bukan satu panggilan per order).
+  if (withItems && rows.length) {
+    var byOrder = {};
+    listObjects_('OrderItems').forEach(function(item) {
+      var key = String(item.orderId);
+      (byOrder[key] = byOrder[key] || []).push(item);
+    });
+    rows = rows.map(function(o) {
+      o.items = byOrder[String(o.id)] || [];
+      return o;
+    });
+  }
+  return rows;
 }
 
 function getOrderWithItems_(id) {
@@ -322,6 +442,159 @@ function upsertCustomer_(order) {
   });
 }
 
+/* ---------------- Laporan ---------------- */
+
+/**
+ * Rekap penjualan untuk dashboard & halaman laporan.
+ * range: 'today' | '7d' | '30d'. Order CANCELLED dikecualikan dari angka penjualan.
+ */
+function getReport_(p) {
+  var range = String(str_(p && p.range, 8) || 'today').toLowerCase();
+  var now = new Date();
+  var tz = (typeof Session !== 'undefined' && Session.getScriptTimeZone) ? Session.getScriptTimeZone() : 'Asia/Jakarta';
+  var todayKey = formatDateKey_(now, tz);
+
+  var orders = listObjects_('Orders').filter(function(o) {
+    return String(o.status).toUpperCase() !== 'CANCELLED';
+  });
+
+  var inRange;
+  if (range === '7d' || range === '30d') {
+    var days = range === '7d' ? 7 : 30;
+    var since = now.getTime() - days * 24 * 3600 * 1000;
+    inRange = orders.filter(function(o) {
+      var t = Date.parse(String(o.createdAt));
+      return isFinite(t) && t >= since;
+    });
+  } else {
+    inRange = orders.filter(function(o) {
+      return dateKeyOf_(o.createdAt, tz) === todayKey;
+    });
+  }
+
+  var grossSales = 0, discountTotal = 0, taxTotal = 0, serviceTotal = 0, netSales = 0;
+  var paymentMix = {};
+  var statusCount = {};
+  var byDay = {};
+  var orderIds = {};
+
+  inRange.forEach(function(o) {
+    var subtotal = Number(o.subtotal) || 0;
+    var total = Number(o.total) || 0;
+    grossSales += subtotal;
+    discountTotal += Number(o.discount) || 0;
+    taxTotal += Number(o.tax) || 0;
+    serviceTotal += Number(o.service) || 0;
+    netSales += total;
+    orderIds[String(o.id)] = true;
+    statusCount[String(o.status)] = (statusCount[String(o.status)] || 0) + 1;
+
+    if (String(o.status).toUpperCase() === 'PAID') {
+      var method = String(o.paymentMethod || 'UNPAID-METHOD');
+      paymentMix[method] = (paymentMix[method] || 0) + total;
+    }
+
+    var key = range === '7d' || range === '30d'
+      ? dateKeyOf_(o.createdAt, tz)
+      : todayKey;
+    byDay[key] = (byDay[key] || 0) + total;
+  });
+
+  var topMap = {};
+  if (Object.keys(orderIds).length) {
+    listObjects_('OrderItems').forEach(function(item) {
+      if (!orderIds[String(item.orderId)]) return;
+      var name = String(item.name || item.menuItemId);
+      var entry = topMap[name] = topMap[name] || {name: name, qty: 0, revenue: 0};
+      entry.qty += Number(item.qty) || 0;
+      entry.revenue += (Number(item.price) || 0) * (Number(item.qty) || 0);
+    });
+  }
+  var topItems = Object.keys(topMap).map(function(k) { return topMap[k]; });
+  topItems.sort(function(a, b) { return b.qty - a.qty; });
+  topItems = topItems.slice(0, 10);
+
+  var dayCount = range === '30d' ? 30 : range === '7d' ? 7 : 1;
+  var series = [];
+  for (var i = dayCount - 1; i >= 0; i--) {
+    var key2 = formatDateKey_(new Date(now.getTime() - i * 24 * 3600 * 1000), tz);
+    series.push({date: key2, total: byDay[key2] || 0});
+  }
+
+  var count = inRange.length;
+  return {
+    range: range === '7d' ? '7d' : range === '30d' ? '30d' : 'today',
+    orderCount: count,
+    grossSales: grossSales,
+    discount: discountTotal,
+    tax: taxTotal,
+    service: serviceTotal,
+    netSales: netSales,
+    avgCheck: count ? Math.round(netSales / count) : 0,
+    paymentMix: paymentMix,
+    statusCount: statusCount,
+    topItems: topItems,
+    series: series
+  };
+}
+
+function dateKeyOf_(value, tz) {
+  var t = Date.parse(String(value));
+  if (!isFinite(t)) return '';
+  return formatDateKey_(new Date(t), tz);
+}
+
+function formatDateKey_(date, tz) {
+  if (typeof Utilities !== 'undefined' && Utilities.formatDate) {
+    return Utilities.formatDate(date, tz, 'yyyy-MM-dd');
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+/* ---------------- Pengaturan ---------------- */
+
+/** Subset pengaturan yang aman untuk dikonsumsi halaman publik. */
+function getPublicSettings_() {
+  var store = resolveStore_('');
+  return {
+    storeId: store.id || '',
+    storeName: String(store.name || ''),
+    phone: String(store.phone || ''),
+    address: String(store.address || ''),
+    taxRate: numberOr_(store.taxRate, 0),
+    serviceRate: numberOr_(store.serviceRate, 0)
+  };
+}
+
+function saveSettings_(p) {
+  var store = resolveStore_(str_(p.storeId, 64));
+  var row = findRow_('Stores', store.id);
+  var next = {
+    id: store.id,
+    name: str_(p.name, 120) || String(store.name || ''),
+    slug: String(store.slug || ''),
+    phone: str_(p.phone, 20).replace(/[^0-9+]/g, ''),
+    address: str_(p.address, 300),
+    taxRate: p.taxRate === undefined || p.taxRate === '' ? numberOr_(store.taxRate, 0) : Math.max(0, Number(p.taxRate) || 0),
+    serviceRate: p.serviceRate === undefined || p.serviceRate === '' ? numberOr_(store.serviceRate, 0) : Math.max(0, Number(p.serviceRate) || 0),
+    createdAt: store.createdAt || iso_()
+  };
+  if (row) updateRow_('Stores', row, next);
+  else appendObject_('Stores', next);
+
+  appendObject_('AuditLog', {
+    id: uuid_(),
+    storeId: next.id,
+    userId: str_(p.userId, 64) || 'staff',
+    action: 'UPDATE',
+    entity: 'SETTINGS',
+    entityId: next.id,
+    detail: JSON.stringify({name: next.name, taxRate: next.taxRate, serviceRate: next.serviceRate}),
+    createdAt: iso_()
+  });
+  return {ok: true, data: next};
+}
+
 /* ---------------- Sheet helpers ---------------- */
 
 function listObjects_(sheetName) {
@@ -334,6 +607,17 @@ function listObjects_(sheetName) {
   return values.slice(1)
     .filter(function(row) { return row.join('') !== ''; })
     .map(function(row) { return rowToObject_(sheetHeaders, row); });
+}
+
+/** Menu siap pakai client: kategori berupa nama (bukan id), hanya yang aktif. */
+function listMenuForClient_() {
+  var catById = indexBy_(listObjects_('Categories'), 'id');
+  return listObjects_('Menu').filter(isActive_).map(function(m) {
+    var out = Object.assign({}, m);
+    var cat = catById[String(m.categoryId)];
+    out.category = cat ? String(cat.name) : '';
+    return out;
+  });
 }
 
 function rowToObject_(headers, row) {
@@ -398,6 +682,23 @@ function deleteObject_(sheetName, id) {
   return {ok: true, data: {id: id}};
 }
 
+function deleteData_(p) {
+  var sheetName = String(str_(p.sheet, 32));
+  if (!DELETABLE_SHEETS[sheetName]) throw new Error('Sheet tidak boleh dihapus lewat API: ' + sheetName);
+  var result = deleteObject_(sheetName, requireId_(p.id));
+  appendObject_('AuditLog', {
+    id: uuid_(),
+    storeId: str_(p.storeId, 64),
+    userId: str_(p.userId, 64) || 'staff',
+    action: 'DELETE',
+    entity: sheetName.toUpperCase(),
+    entityId: String(result.data.id),
+    detail: '',
+    createdAt: iso_()
+  });
+  return result;
+}
+
 function findRow_(sheetName, id) {
   var sh = sheet_(sheetName);
   var lastRow = sh.getLastRow();
@@ -421,6 +722,89 @@ function getSetting_(key) {
     if (String(rows[i].key) === String(key)) return rows[i].value;
   }
   return '';
+}
+
+/* ---------------- Normalizer ---------------- */
+
+function normalizeMenu_(p) {
+  var out = Object.assign({}, p);
+  out.name = str_(p.name, 120);
+  if (!out.name) throw new Error('Nama menu wajib diisi');
+  out.price = Math.max(0, Number(p.price) || 0);
+  out.cost = Math.max(0, Number(p.cost) || 0);
+  out.stock = p.stock === '' || p.stock === null || p.stock === undefined ? '' : Number(p.stock) || 0;
+  out.categoryId = str_(p.categoryId, 64);
+  out.emoji = str_(p.emoji, 8);
+  out.description = str_(p.description, 300);
+  out.active = p.active === false || p.active === 'false' ? false : true;
+  out.updatedAt = iso_();
+  if (!p.id) out.createdAt = iso_();
+  return out;
+}
+
+function normalizeCategory_(p) {
+  var out = Object.assign({}, p);
+  out.name = str_(p.name, 60);
+  if (!out.name) throw new Error('Nama kategori wajib diisi');
+  out.sortOrder = Number(p.sortOrder) || 99;
+  out.active = p.active === false || p.active === 'false' ? false : true;
+  return out;
+}
+
+function normalizeTable_(p) {
+  var out = Object.assign({}, p);
+  out.code = str_(p.code, 32).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!out.code) throw new Error('Kode meja wajib diisi');
+  out.seats = Math.max(1, Math.floor(Number(p.seats)) || 4);
+  var status = String(str_(p.status, 16)).toUpperCase();
+  out.status = ['AVAILABLE', 'OCCUPIED', 'RESERVED'].indexOf(status) !== -1 ? status : 'AVAILABLE';
+  if (!p.id) out.createdAt = iso_();
+  return out;
+}
+
+function normalizeInventory_(p) {
+  var out = Object.assign({}, p);
+  out.name = str_(p.name, 120);
+  if (!out.name) throw new Error('Nama bahan wajib diisi');
+  out.unit = str_(p.unit, 16) || 'pcs';
+  out.stock = Number(p.stock) || 0;
+  out.parLevel = Number(p.parLevel) || 0;
+  out.cost = Math.max(0, Number(p.cost) || 0);
+  out.updatedAt = iso_();
+  if (!p.id) out.createdAt = iso_();
+  return out;
+}
+
+function normalizeReservation_(p) {
+  var out = Object.assign({}, p);
+  out.guestName = str_(p.guestName, 80);
+  if (!out.guestName) throw new Error('Nama tamu wajib diisi');
+  out.phone = str_(p.phone, 20).replace(/[^0-9+]/g, '');
+  out.partySize = Math.max(1, Math.floor(Number(p.partySize)) || 2);
+  out.reservedAt = str_(p.reservedAt, 32);
+  var status = String(str_(p.status, 16)).toUpperCase();
+  out.status = RESERVATION_STATUSES.indexOf(status) !== -1 ? status : 'BOOKED';
+  out.note = str_(p.note, 300);
+  if (!p.id) out.createdAt = iso_();
+  return out;
+}
+
+function normalizeCustomer_(p) {
+  var out = Object.assign({}, p);
+  out.name = str_(p.name, 80);
+  if (!out.name) throw new Error('Nama pelanggan wajib diisi');
+  out.phone = str_(p.phone, 20).replace(/[^0-9+]/g, '');
+  var tier = String(str_(p.tier, 16)).toUpperCase();
+  out.tier = ['MEMBER', 'SILVER', 'GOLD', 'PLATINUM'].indexOf(tier) !== -1 ? tier : 'MEMBER';
+  out.updatedAt = iso_();
+  if (!p.id) out.createdAt = iso_();
+  return out;
+}
+
+function stripPin_(staff) {
+  var out = Object.assign({}, staff);
+  delete out.pinHash;
+  return out;
 }
 
 /* ---------------- Auth, lock, util ---------------- */
@@ -462,7 +846,7 @@ function resolveStore_(storeIdOrSlug) {
   }
   if (match) return match;
   if (stores.length) return stores[0];
-  return {id: key || 'store-001', taxRate: 0, serviceRate: 0};
+  return {id: key || 'store-001', name: key || 'Store', slug: '', phone: '', address: '', taxRate: 0, serviceRate: 0};
 }
 
 function resolveTableId_(storeId, tableCode, providedTableId) {
@@ -475,19 +859,6 @@ function resolveTableId_(storeId, tableCode, providedTableId) {
     if (sameStore && String(t.code).toLowerCase() === String(tableCode).toLowerCase()) return t.id;
   }
   return '';
-}
-
-function normalizeMenu_(p) {
-  var out = Object.assign({}, p);
-  out.name = str_(p.name, 120);
-  if (!out.name) throw new Error('Nama menu wajib diisi');
-  out.price = Math.max(0, Number(p.price) || 0);
-  out.cost = Math.max(0, Number(p.cost) || 0);
-  out.stock = Number(p.stock) || 0;
-  out.active = p.active === false || p.active === 'false' ? false : true;
-  out.updatedAt = iso_();
-  if (!p.id) out.createdAt = iso_();
-  return out;
 }
 
 function isActive_(obj) {
@@ -557,6 +928,7 @@ function seedDemoData_() {
   appendRows_('Categories', cats.map(function(name, i) {
     return {id: 'cat-' + i, storeId: 'store-001', name: name, sortOrder: i, active: true};
   }));
+  var catId = {'Starter': 'cat-0', 'Main Course': 'cat-1', 'Beverage': 'cat-2', 'Dessert': 'cat-3'};
 
   var menuRows = [
     ['m1','Main Course','Beef Tenderloin',185000,85000,18,'\uD83E\uDD69'],
@@ -571,7 +943,7 @@ function seedDemoData_() {
   ];
   appendRows_('Menu', menuRows.map(function(m) {
     return {
-      id: m[0], storeId: 'store-001', categoryId: '', name: m[2], description: '',
+      id: m[0], storeId: 'store-001', categoryId: catId[m[1]], name: m[2], description: '',
       price: m[3], cost: m[4], stock: m[5], active: true, emoji: m[6], imageUrl: '',
       createdAt: iso_(), updatedAt: iso_()
     };

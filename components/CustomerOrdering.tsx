@@ -1,13 +1,49 @@
 "use client";
-import {useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useState} from "react";
 import Image from "next/image";
-import {calcTotals, menus, rupiah, STORE_NAME, type Menu} from "@/lib/data";
+import {CloudUpload, RefreshCw, WifiOff} from "lucide-react";
+import {rupiah} from "@/lib/data";
+import {
+  fetchPublicMenu,
+  fetchPublicSettings,
+  previewTotals,
+  type GasMenu,
+  type GasSettings
+} from "@/lib/api";
 
-type CartLine = {item: Menu; qty: number};
+type CartLine = {item: GasMenu; qty: number};
 
 const WA_PHONE = (process.env.NEXT_PUBLIC_CASHIER_WHATSAPP || "").replace(/\D/g, "");
 
+type PendingOrder = {id: string; payload: Record<string, unknown>; savedAt: number};
+
+function queueKey(storeId: string, tableId: string) {
+  return `kastriva:pendingOrder:${storeId}:${tableId}`;
+}
+
+function loadQueue(key: string): PendingOrder[] {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? (parsed as PendingOrder[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveQueue(key: string, list: PendingOrder[]) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(list.slice(-10)));
+  } catch {
+    /* penyimpanan tidak tersedia: abaikan */
+  }
+}
+
 export default function CustomerOrdering({storeId, tableId}: {storeId: string; tableId: string}) {
+  const [menus, setMenus] = useState<GasMenu[]>([]);
+  const [settings, setSettings] = useState<GasSettings | null>(null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
@@ -16,21 +52,91 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [okMessage, setOkMessage] = useState("");
+  const [lastOrder, setLastOrder] = useState<{id: string; total: number} | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [online, setOnline] = useState(true);
 
-  const cats = useMemo(() => ["All", ...Array.from(new Set(menus.map(m => m.category)))], []);
+  const storageKey = `kastriva:cart:${storeId}:${tableId}`;
+  const queueKeyStr = queueKey(storeId, tableId);
+
+  const loadData = useCallback(async () => {
+    setLoadState("loading");
+    setLoadError("");
+    try {
+      const [menuList, storeSettings] = await Promise.all([fetchPublicMenu(), fetchPublicSettings()]);
+      setMenus(menuList);
+      setSettings(storeSettings);
+      setLoadState("ready");
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Gagal memuat menu");
+      setLoadState("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  const flushQueue = useCallback(async () => {
+    const queue = loadQueue(queueKeyStr);
+    if (!queue.length) return;
+    const remaining: PendingOrder[] = [];
+    for (const entry of queue) {
+      try {
+        const res = await fetch("/api/orders", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "createOrder", payload: entry.payload})
+        });
+        const body = (await res.json()) as {ok?: boolean; data?: {id?: string; total?: number}; error?: string};
+        if (res.ok && body.ok && body.data) {
+          setLastOrder({id: body.data.id || "?", total: Number(body.data.total) || 0});
+          setOkMessage("Pesanan offline berhasil terkirim otomatis.");
+        } else {
+          remaining.push(entry);
+        }
+      } catch {
+        remaining.push(entry);
+      }
+    }
+    saveQueue(queueKeyStr, remaining);
+    setPendingCount(remaining.length);
+  }, [queueKeyStr]);
+
+  useEffect(() => {
+    setPendingCount(loadQueue(queueKeyStr).length);
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener("online", () => {
+      setOnline(true);
+      void flushQueue();
+    });
+    window.addEventListener("offline", () => setOnline(false));
+    if (navigator.onLine) void flushQueue();
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, [queueKeyStr, flushQueue]);
+
+  const cats = useMemo(
+    () => ["All", ...Array.from(new Set(menus.map(m => m.category || "Lainnya")))],
+    [menus]
+  );
   const list = useMemo(
     () =>
       menus.filter(
-        m => (cat === "All" || m.category === cat) && m.name.toLowerCase().includes(q.trim().toLowerCase())
+        m =>
+          (cat === "All" || (m.category || "Lainnya") === cat) &&
+          m.name.toLowerCase().includes(q.trim().toLowerCase())
       ),
-    [cat, q]
+    [menus, cat, q]
   );
 
   const subtotal = useMemo(() => cart.reduce((sum, line) => sum + line.item.price * line.qty, 0), [cart]);
-  const totals = useMemo(() => calcTotals(subtotal), [subtotal]);
+  const totals = useMemo(() => previewTotals(subtotal, 0, settings), [subtotal, settings]);
 
   // Keranjang bertahan saat halaman ter-refresh / kembali dari WhatsApp.
-  const storageKey = `kastriva:cart:${storeId}:${tableId}`;
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(storageKey);
@@ -49,7 +155,9 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
     } catch {
       /* localStorage tidak tersedia atau isinya rusak: abaikan */
     }
-  }, [storageKey]);
+    // menus sengaja tidak di-depend: pemulihan cukup sekali setelah data siap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey, menus.length > 0]);
 
   useEffect(() => {
     try {
@@ -59,14 +167,27 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
     }
   }, [cart, storageKey]);
 
-  const add = (item: Menu) =>
+  const stockOf = (item: GasMenu): number | null => (typeof item.stock === "number" ? item.stock : null);
+
+  const add = (item: GasMenu) => {
+    const stock = stockOf(item);
+    if (stock !== null && stock <= 0) {
+      setError(`Maaf, ${item.name} sedang habis.`);
+      return;
+    }
     setCart(lines => {
       const found = lines.find(line => line.item.id === item.id);
+      const currentQty = found ? found.qty : 0;
+      if (stock !== null && currentQty + 1 > stock) {
+        setError(`Stok ${item.name} tersisa ${stock}`);
+        return lines;
+      }
       if (found && found.qty >= 99) return lines;
       return found
         ? lines.map(line => (line.item.id === item.id ? {...line, qty: line.qty + 1} : line))
         : [...lines, {item, qty: 1}];
     });
+  };
 
   const changeQty = (id: string, delta: number) =>
     setCart(lines =>
@@ -75,14 +196,15 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
         .filter(line => line.qty > 0)
     );
 
-  const waLink = () => {
+  const waLink = (orderId?: string) => {
     const lines = cart.map(l => `• ${l.item.name} x${l.qty} = ${rupiah(l.item.price * l.qty)}`).join("\n");
     const text = [
       "*PESANAN BARU - KASTRIVA*",
       "",
-      `Toko: ${storeId}`,
+      `Toko: ${settings?.storeName || storeId}`,
       `Meja: ${tableId}`,
       `Nama: ${name.trim() || "-"}`,
+      orderId ? `No. Order: ${orderId}` : "",
       "",
       lines,
       "",
@@ -90,7 +212,9 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
       `Service: ${rupiah(totals.service)}`,
       `*TOTAL: ${rupiah(totals.total)}*`,
       `Catatan: ${note.trim() || "-"}`
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
     const query = `?text=${encodeURIComponent(text)}`;
     return WA_PHONE ? `https://wa.me/${WA_PHONE}${query}` : `https://wa.me/${query}`;
   };
@@ -103,87 +227,144 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
     setSending(true);
     setError("");
     setOkMessage("");
+    const payload = {
+      storeId,
+      tableCode: tableId,
+      customerName: name.trim(),
+      note: note.trim(),
+      channel: "QR",
+      // Harga tidak dikirim: server menghitung ulang dari data menu.
+      items: cart.map(l => ({menuItemId: l.item.id, name: l.item.name, qty: l.qty, note: ""}))
+    };
+
+    if (!navigator.onLine) {
+      const queue = loadQueue(queueKeyStr);
+      queue.push({id: `P-${Date.now().toString(36)}`, payload, savedAt: Date.now()});
+      saveQueue(queueKeyStr, queue);
+      setPendingCount(queue.length);
+      setOkMessage("Anda sedang offline. Pesanan disimpan dan otomatis terkirim saat koneksi kembali.");
+      setCart([]);
+      setSending(false);
+      return;
+    }
+
     try {
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          action: "createOrder",
-          payload: {
-            storeId,
-            tableCode: tableId,
-            customerName: name.trim(),
-            note: note.trim(),
-            channel: "QR",
-            // Harga tidak dikirim: server menghitung ulang dari data menu.
-            items: cart.map(l => ({menuItemId: l.item.id, name: l.item.name, qty: l.qty, note: ""}))
-          }
-        })
+        body: JSON.stringify({action: "createOrder", payload})
       });
-      const data: {ok?: boolean; error?: string} = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data.error || "Gagal menyimpan pesanan");
-      // Link dibuat sebelum keranjang dikosongkan supaya isi pesan tetap lengkap.
-      const link = waLink();
-      setOkMessage("Pesanan tersimpan. Membuka WhatsApp kasir...");
+      const data: {ok?: boolean; data?: {id?: string; total?: number}; error?: string} = await res
+        .json()
+        .catch(() => ({}));
+      if (!res.ok || !data.ok || !data.data) throw new Error(data.error || "Gagal menyimpan pesanan");
+      setLastOrder({id: data.data.id || "?", total: Number(data.data.total) || 0});
+      setOkMessage("Pesanan tersimpan! Kasir kami segera memproses.");
       setCart([]);
-      window.location.assign(link);
+      setNote("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Gagal menyimpan pesanan");
+      // Bisa jadi koneksi putus di tengah jalan: masukkan antrean offline.
+      const message = e instanceof Error ? e.message : "Gagal menyimpan pesanan";
+      if (!navigator.onLine) {
+        const queue = loadQueue(queueKeyStr);
+        queue.push({id: `P-${Date.now().toString(36)}`, payload, savedAt: Date.now()});
+        saveQueue(queueKeyStr, queue);
+        setPendingCount(queue.length);
+        setOkMessage("Koneksi terputus. Pesanan otomatis terkirim saat online kembali.");
+        setCart([]);
+      } else {
+        setError(message);
+      }
     } finally {
       setSending(false);
     }
   };
+
+  const storeDisplay = settings?.storeName || process.env.NEXT_PUBLIC_STORE_NAME || "Kastriva";
 
   return (
     <main className="hero">
       <div className="customer">
         <div className="card glass">
           <div className="pageHead">
-            <Image className="logo" src="/brand/logo.png" alt="Kastriva" width={62} height={62} />
+            <Image className="logo" src="/brand/logo.png" alt={storeDisplay} width={62} height={62} />
             <div>
-              <h1 style={{margin: 0}}>{STORE_NAME}</h1>
+              <h1 style={{margin: 0}}>{storeDisplay}</h1>
               <p className="muted" style={{margin: "4px 0"}}>
                 Meja {tableId} • Digital Menu
               </p>
             </div>
+            {!online ? (
+              <span className="badge red offlineBadge">
+                <WifiOff size={13} aria-hidden="true" /> Offline
+              </span>
+            ) : null}
           </div>
         </div>
 
-        <div className="card glass" style={{marginTop: 14}}>
-          <input
-            className="search"
-            placeholder="Cari makanan atau minuman..."
-            aria-label="Cari menu"
-            value={q}
-            onChange={e => setQ(e.target.value)}
-          />
-          <div className="catRow" style={{marginTop: 10}}>
-            {cats.map(c => (
-              <button type="button" className={`btn cat ${c === cat ? "primary" : ""}`} key={c} onClick={() => setCat(c)}>
-                {c}
-              </button>
-            ))}
+        {loadState === "loading" ? (
+          <div className="card glass" style={{marginTop: 14}}>
+            <div className="skeleton" style={{height: 46}} />
+            <div className="skeleton" style={{height: 120, marginTop: 10}} />
+            <div className="skeleton" style={{height: 120}} />
           </div>
-        </div>
-
-        <div className="grid customerGrid" style={{marginTop: 14}}>
-          {list.length === 0 ? <div className="card glass empty">Menu tidak ditemukan.</div> : null}
-          {list.map(item => (
-            <div className="card glass" key={item.id}>
-              <div className="menuIcon menuIconLg" aria-hidden="true">
-                {item.emoji}
-              </div>
-              <h3>{item.name}</h3>
-              <p className="muted">{item.category}</p>
-              <div className="split">
-                <b className="price">{rupiah(item.price)}</b>
-                <button type="button" className="btn primary" onClick={() => add(item)}>
-                  Tambah
-                </button>
+        ) : loadState === "error" ? (
+          <div className="card glass" style={{marginTop: 14}}>
+            <p className="alert error" role="alert">
+              {loadError}
+            </p>
+            <button type="button" className="btn primary" onClick={() => void loadData()}>
+              <RefreshCw size={15} aria-hidden="true" /> Coba Lagi
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="card glass" style={{marginTop: 14}}>
+              <input
+                className="search"
+                placeholder="Cari makanan atau minuman..."
+                aria-label="Cari menu"
+                value={q}
+                onChange={e => setQ(e.target.value)}
+              />
+              <div className="catRow" style={{marginTop: 10}}>
+                {cats.map(c => (
+                  <button
+                    type="button"
+                    className={`btn cat ${c === cat ? "primary" : ""}`}
+                    key={c}
+                    onClick={() => setCat(c)}
+                  >
+                    {c}
+                  </button>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
+
+            <div className="grid customerGrid" style={{marginTop: 14}}>
+              {list.length === 0 ? <div className="card glass empty">Menu tidak ditemukan.</div> : null}
+              {list.map(item => {
+                const stock = stockOf(item);
+                const available = stock === null || stock > 0;
+                return (
+                  <div className={`card glass ${available ? "" : "menuItemOff"}`} key={item.id}>
+                    <div className="menuIcon menuIconLg" aria-hidden="true">
+                      {item.emoji || "🍽️"}
+                    </div>
+                    <h3>{item.name}</h3>
+                    <p className="muted">{item.category || "Lainnya"}</p>
+                    <div className="split">
+                      <b className="price">{rupiah(item.price)}</b>
+                      <button type="button" className="btn primary" disabled={!available} onClick={() => add(item)}>
+                        {available ? "Tambah" : "Habis"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         <div className="card glass customerCart" style={{marginTop: 14}}>
           <div className="split">
@@ -227,7 +408,11 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
             <span>{rupiah(totals.subtotal)}</span>
           </div>
           <div className="split muted" style={{marginTop: 6}}>
-            <span>Service</span>
+            <span>Pajak {Math.round((settings?.taxRate ?? 0) * 100) / 100}%</span>
+            <span>{rupiah(totals.tax)}</span>
+          </div>
+          <div className="split muted" style={{marginTop: 6}}>
+            <span>Service {Math.round((settings?.serviceRate ?? 0) * 100) / 100}%</span>
             <span>{rupiah(totals.service)}</span>
           </div>
           <div className="split" style={{marginTop: 10}}>
@@ -243,6 +428,20 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
           {okMessage ? (
             <p className="alert ok" role="status">
               {okMessage}
+              {lastOrder ? (
+                <>
+                  <br />
+                  <b>
+                    No. Order {lastOrder.id} • Total {rupiah(lastOrder.total)}
+                  </b>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {pendingCount > 0 ? (
+            <p className="alert" role="status">
+              <CloudUpload size={14} aria-hidden="true" /> {pendingCount} pesanan menunggu koneksi — akan terkirim
+              otomatis.
             </p>
           ) : null}
 
@@ -250,11 +449,16 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
             type="button"
             className="btn success fullWidth"
             style={{marginTop: 12}}
-            disabled={sending || cart.length === 0}
+            disabled={sending || cart.length === 0 || loadState !== "ready"}
             onClick={send}
           >
-            {sending ? "Mengirim..." : "Kirim ke WhatsApp Kasir"}
+            {sending ? "Mengirim..." : "Kirim Pesanan ke Kasir"}
           </button>
+          {cart.length > 0 && WA_PHONE ? (
+            <a className="btn fullWidth" style={{marginTop: 8, textAlign: "center"}} href={waLink()} target="_blank" rel="noreferrer">
+              Konfirmasi via WhatsApp
+            </a>
+          ) : null}
         </div>
       </div>
     </main>

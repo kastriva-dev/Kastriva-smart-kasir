@@ -147,3 +147,134 @@ test("doGet menghormati auth", () => {
   assert.equal(env.get({key: KEY, action: "getMenu"}).ok, true);
   assert.equal(env.get({key: "salah", action: "getMenu"}).ok, false);
 });
+
+/* ---------- Pembayaran, laporan, stok, pengaturan ---------- */
+
+test("payOrder mencatat tunai, kembalian, dan status PAID", () => {
+  const env = bootstrapped();
+  const order = env.call("createOrder", {items: [{menuItemId: "m1", qty: 1}]}).data;
+  const bad = env.call("payOrder", {id: order.id, method: "CASH", paidAmount: 1000});
+  assert.equal(bad.ok, false, "tunai kurang dari total harus ditolak");
+
+  const paid = env.call("payOrder", {id: order.id, method: "CASH", paidAmount: 200000});
+  assert.equal(paid.ok, true);
+  assert.equal(paid.data.status, "PAID");
+  assert.equal(paid.data.paymentMethod, "CASH");
+  assert.equal(paid.data.paidAmount, 200000);
+  assert.equal(paid.data.changeAmount, 200000 - paid.data.total);
+
+  const qris = env.call("payOrder", {id: env.call("createOrder", {items: [{menuItemId: "m2", qty: 1}]}).data.id, method: "QRIS"});
+  assert.equal(qris.data.paidAmount, qris.data.total, "non-tunai selalu pas");
+  assert.equal(qris.data.changeAmount, 0);
+  assert.equal(env.call("payOrder", {id: order.id, method: "JUMBO"}).ok, false);
+});
+
+test("stok berkurang saat order dan habis ditolak", () => {
+  const env = bootstrapped();
+  const before = env.sheets.get("Menu").rows.find(r => r[0] === "m3");
+  const stockAwal = Number(before[7]);
+
+  const res = env.call("createOrder", {items: [{menuItemId: "m3", qty: 2}]});
+  assert.equal(res.ok, true);
+  const after = env.sheets.get("Menu").rows.find(r => r[0] === "m3");
+  assert.equal(Number(after[7]), stockAwal - 2, "stok harus berkurang sebesar qty");
+
+  const sisa = Number(after[7]);
+  assert.equal(env.call("createOrder", {items: [{menuItemId: "m3", qty: sisa + 1}]}).ok, false, "stok kurang ditolak");
+  assert.equal(env.call("createOrder", {items: [{menuItemId: "m3", qty: sisa}]}).ok, true);
+  const habis = env.sheets.get("Menu").rows.find(r => r[0] === "m3");
+  assert.equal(Number(habis[7]), 0);
+
+  // Menu tanpa stok terlacak (string kosong) tidak dibatasi.
+  const m1 = env.sheets.get("Menu").rows.find(r => r[0] === "m1");
+  m1[7] = "";
+  assert.equal(env.call("createOrder", {items: [{menuItemId: "m1", qty: 50}]}).ok, true);
+});
+
+test("diskon hanya dihormati untuk request admin (_admin)", () => {
+  const env = bootstrapped();
+  const publik = env.call("createOrder", {items: [{menuItemId: "m1", qty: 1}], discount: 100000});
+  assert.equal(publik.data.discount, 0, "tanpa _admin diskon diabaikan");
+
+  const admin = env.call("createOrder", {_admin: true, items: [{menuItemId: "m1", qty: 1}], discount: 100000});
+  assert.equal(admin.data.discount, 100000);
+  assert.equal(admin.data.total, publik.data.subtotal - 100000 + publik.data.service);
+
+  const berlebih = env.call("createOrder", {_admin: true, items: [{menuItemId: "m1", qty: 1}], discount: 99999999});
+  assert.equal(berlebih.data.discount, berlebih.data.subtotal, "diskon tidak melebihi subtotal");
+  assert.equal(berlebih.data.total, berlebih.data.service, "subtotal-0 berarti hanya pajak/service");
+});
+
+test("getMenu menyertakan nama kategori", () => {
+  const env = bootstrapped();
+  const menu = env.call("getMenu", {}).data;
+  const beef = menu.find(m => m.id === "m1");
+  assert.equal(beef.category, "Main Course");
+});
+
+test("getSettings & saveSettings", () => {
+  const env = bootstrapped();
+  const settings = env.call("getSettings", {}).data;
+  assert.equal(settings.storeName, "Kastriva Grand Dining");
+  assert.equal(Number(settings.serviceRate), 5);
+
+  const saved = env.call("saveSettings", {name: "Kafe Baru", taxRate: 11, serviceRate: 0, phone: "0811xxx"});
+  assert.equal(saved.ok, true);
+  assert.equal(saved.data.name, "Kafe Baru");
+  assert.equal(Number(saved.data.taxRate), 11);
+  assert.equal(Number(saved.data.serviceRate), 0);
+  const after = env.call("getSettings", {}).data;
+  assert.equal(after.storeName, "Kafe Baru");
+  assert.equal(Number(after.taxRate), 11);
+});
+
+test("getReport merangkum penjualan hari ini", () => {
+  const env = bootstrapped();
+  const o1 = env.call("createOrder", {items: [{menuItemId: "m1", qty: 2}, {menuItemId: "m4", qty: 1}]}).data;
+  env.call("payOrder", {id: o1.id, method: "CASH", paidAmount: o1.total + 50000});
+  const o2 = env.call("createOrder", {items: [{menuItemId: "m2", qty: 1}]}).data;
+
+  const report = env.call("getReport", {range: "today"}).data;
+  assert.equal(report.orderCount, 2);
+  assert.equal(report.grossSales, 435000 + 125000);
+  assert.equal(report.netSales, o1.total + o2.total);
+  assert.equal(report.statusCount.PAID, 1);
+  assert.equal(report.paymentMix.CASH, o1.total);
+  assert.ok(report.topItems.some(t => t.name === "Beef Tenderloin" && t.qty === 2));
+  assert.equal(report.series.length, 1);
+
+  const week = env.call("getReport", {range: "7d"}).data;
+  assert.equal(week.series.length, 7);
+});
+
+test("deleteData mematuhi whitelist", () => {
+  const env = bootstrapped();
+  assert.equal(env.call("deleteData", {sheet: "Orders", id: "ORD-1"}).ok, false, "Orders tidak boleh dihapus");
+  assert.equal(env.call("deleteData", {sheet: "Menu", id: "m9"}).ok, true);
+  assert.equal(env.call("deleteData", {sheet: "Menu", id: "m9"}).ok, false, "id yang sama sudah tidak ada");
+});
+
+test("saveTable menormalisasi kode & status", () => {
+  const env = bootstrapped();
+  const saved = env.call("saveTable", {code: " Meja Baru! ", seats: 6});
+  assert.equal(saved.ok, true);
+  assert.equal(saved.data.code, "meja-baru");
+  assert.equal(saved.data.status, "AVAILABLE");
+  assert.equal(env.call("saveTable", {code: "   "}).ok, false, "kode wajib");
+});
+
+test("getStaff menyembunyikan pinHash", () => {
+  const env = bootstrapped();
+  env.sheets.get("Staff").rows.push(["s1", "store-001", "Ayu", "Manager", "pin-hash", true, "2026-01-01"]);
+  const staff = env.call("getStaff", {}).data;
+  assert.equal(staff.length, 1);
+  assert.equal("pinHash" in staff[0], false);
+});
+
+test("getOrders withItems menyertakan item", () => {
+  const env = bootstrapped();
+  env.call("createOrder", {items: [{menuItemId: "m1", qty: 1}, {menuItemId: "m2", qty: 2}]});
+  const orders = env.call("getOrders", {withItems: true}).data;
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].items.length, 2);
+});
