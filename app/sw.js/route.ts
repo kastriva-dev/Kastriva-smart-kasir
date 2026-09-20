@@ -10,7 +10,7 @@
  *   agar digital menu tetap tampil saat koneksi restoran putus.
  */
 const SW = `
-const VERSION = 'kastriva-v4';
+const VERSION = 'kastriva-v6';
 const SHELL = VERSION + '-shell';
 const ASSETS = VERSION + '-assets';
 const MENU_CACHE = VERSION + '-menu';

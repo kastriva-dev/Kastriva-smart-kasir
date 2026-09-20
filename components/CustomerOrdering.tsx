@@ -6,6 +6,7 @@ import {rupiah} from "@/lib/data";
 import {
   fetchPublicMenu,
   fetchPublicSettings,
+  newClientOrderId,
   previewTotals,
   type GasMenu,
   type GasSettings
@@ -39,6 +40,17 @@ function saveQueue(key: string, list: PendingOrder[]) {
   }
 }
 
+function enqueuePending(key: string, payload: Record<string, unknown>): PendingOrder[] {
+  const queue = loadQueue(key);
+  const id = String(payload.clientOrderId || newClientOrderId("QR"));
+  payload.clientOrderId = id;
+  if (!queue.some(entry => String(entry.payload?.clientOrderId || entry.id) === id)) {
+    queue.push({id, payload, savedAt: Date.now()});
+  }
+  saveQueue(key, queue);
+  return queue;
+}
+
 export default function CustomerOrdering({storeId, tableId}: {storeId: string; tableId: string}) {
   const [menus, setMenus] = useState<GasMenu[]>([]);
   const [settings, setSettings] = useState<GasSettings | null>(null);
@@ -64,7 +76,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
     setLoadState("loading");
     setLoadError("");
     try {
-      const [menuList, storeSettings] = await Promise.all([fetchPublicMenu(), fetchPublicSettings()]);
+      const [menuList, storeSettings] = await Promise.all([fetchPublicMenu(storeId), fetchPublicSettings(storeId)]);
       setMenus(menuList);
       setSettings(storeSettings);
       setLoadState("ready");
@@ -72,7 +84,7 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
       setLoadError(e instanceof Error ? e.message : "Gagal memuat menu");
       setLoadState("error");
     }
-  }, []);
+  }, [storeId]);
 
   useEffect(() => {
     void loadData();
@@ -93,8 +105,10 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
         if (res.ok && body.ok && body.data) {
           setLastOrder({id: body.data.id || "?", total: Number(body.data.total) || 0});
           setOkMessage("Pesanan offline berhasil terkirim otomatis.");
-        } else {
+        } else if (res.status >= 500 || res.status === 429) {
           remaining.push(entry);
+        } else {
+          setError(body.error || `Pesanan offline ${entry.id} ditolak server`);
         }
       } catch {
         remaining.push(entry);
@@ -234,14 +248,13 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
       customerName: name.trim(),
       note: note.trim(),
       channel: "QR",
+      clientOrderId: newClientOrderId("QR"),
       // Harga tidak dikirim: server menghitung ulang dari data menu.
       items: cart.map(l => ({menuItemId: l.item.id, name: l.item.name, qty: l.qty, note: ""}))
     };
 
     if (!navigator.onLine) {
-      const queue = loadQueue(queueKeyStr);
-      queue.push({id: `P-${Date.now().toString(36)}`, payload, savedAt: Date.now()});
-      saveQueue(queueKeyStr, queue);
+      const queue = enqueuePending(queueKeyStr, payload);
       setPendingCount(queue.length);
       setOkMessage("Anda sedang offline. Pesanan disimpan dan otomatis terkirim saat koneksi kembali.");
       setCart([]);
@@ -259,26 +272,32 @@ export default function CustomerOrdering({storeId, tableId}: {storeId: string; t
       const data: {ok?: boolean; data?: {id?: string; total?: number}; error?: string} = await res
         .json()
         .catch(() => ({}));
-      if (!res.ok || !data.ok || !data.data) throw new Error(data.error || "Gagal menyimpan pesanan");
+      if (!res.ok || !data.ok || !data.data) {
+        // 5xx/429 adalah hasil yang belum pasti: retry harus memakai clientOrderId yang sama.
+        if (res.status >= 500 || res.status === 429) {
+          const queue = enqueuePending(queueKeyStr, payload);
+          setPendingCount(queue.length);
+          setOkMessage("Server belum memberi kepastian. Pesanan diamankan dan akan dicoba ulang tanpa membuat duplikat.");
+          setCart([]);
+          setCartOpen(false);
+          return;
+        }
+        throw new Error(data.error || "Gagal menyimpan pesanan");
+      }
       setLastOrder({id: data.data.id || "?", total: Number(data.data.total) || 0});
       setOkMessage("Pesanan tersimpan! Kasir kami segera memproses.");
       setCart([]);
       setNote("");
       setCartOpen(false);
     } catch (e) {
-      // Bisa jadi koneksi putus di tengah jalan: masukkan antrean offline.
-      const message = e instanceof Error ? e.message : "Gagal menyimpan pesanan";
-      if (!navigator.onLine) {
-        const queue = loadQueue(queueKeyStr);
-        queue.push({id: `P-${Date.now().toString(36)}`, payload, savedAt: Date.now()});
-        saveQueue(queueKeyStr, queue);
-        setPendingCount(queue.length);
-        setOkMessage("Koneksi terputus. Pesanan otomatis terkirim saat online kembali.");
-        setCart([]);
-        setCartOpen(false);
-      } else {
-        setError(message);
-      }
+      // Fetch gagal sebelum respons diterima: outcome server tidak pasti, jadi simpan
+      // payload yang SAMA. Idempotency server mencegah order ganda saat retry.
+      const queue = enqueuePending(queueKeyStr, payload);
+      setPendingCount(queue.length);
+      setOkMessage("Koneksi bermasalah. Pesanan diamankan dan otomatis dicoba ulang tanpa duplikasi.");
+      setCart([]);
+      setCartOpen(false);
+      if (navigator.onLine) setError(e instanceof Error ? e.message : "Koneksi ke server terputus");
     } finally {
       setSending(false);
     }

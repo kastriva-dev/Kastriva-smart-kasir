@@ -1,22 +1,30 @@
 "use client";
-import {useEffect, useMemo, useState} from "react";
-import {Banknote, CreditCard, Pause, Play, Printer, QrCode, Trash2, Wallet, X} from "lucide-react";
+import {useEffect, useMemo, useRef, useState} from "react";
+import {Banknote, CreditCard, Pause, Play, Printer, QrCode, ScanBarcode, Trash2, Wallet, X, BadgePercent, UserRoundSearch} from "lucide-react";
 import {rupiah} from "@/lib/data";
+import BarcodeScannerModal from "@/components/admin/BarcodeScannerModal";
+import {loadHardwareSettings, normalizeScannedBarcode, openCashDrawer, printKitchenOnce, printReceiptDirect} from "@/lib/hardware";
 import {
   PAYMENT_LABELS,
   PAYMENT_METHODS,
+  gasCall,
   previewTotals,
   type GasMenu,
   type GasOrder,
+  type GasCustomer,
+  type GasPromotion,
+  type GasVoucher,
   type GasSettings,
   type GasTable,
   type HeldOrder,
   type PaymentMethod,
   loadHeldOrders,
+  newClientOrderId,
   saveHeldOrders
 } from "@/lib/api";
 
 type CartLine = {item: GasMenu; qty: number};
+type SplitPayLine = {method: PaymentMethod; amount: string; received: string};
 
 type Props = {
   menus: GasMenu[];
@@ -49,17 +57,73 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
   const [query, setQuery] = useState("");
   const [tableCode, setTableCode] = useState("");
   const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [member, setMember] = useState<GasCustomer | null>(null);
+  const [promotions, setPromotions] = useState<GasPromotion[]>([]);
+  const [vouchers, setVouchers] = useState<GasVoucher[]>([]);
+  const [promoId, setPromoId] = useState("");
+  const [voucherCode, setVoucherCode] = useState("");
+  const [pointsToRedeem, setPointsToRedeem] = useState("");
   const [orderNote, setOrderNote] = useState("");
+  const [discountType, setDiscountType] = useState<"FIXED" | "PERCENT">("FIXED");
   const [discount, setDiscount] = useState("");
   const [payOpen, setPayOpen] = useState(false);
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [paidInput, setPaidInput] = useState("");
+  const [splitMode, setSplitMode] = useState(false);
+  const [splitPayments, setSplitPayments] = useState<SplitPayLine[]>([{method:"CASH",amount:"",received:""},{method:"QRIS",amount:"",received:""}]);
   const [submitting, setSubmitting] = useState(false);
   const [receipt, setReceipt] = useState<GasOrder | null>(null);
   const [held, setHeld] = useState<HeldOrder[]>([]);
   const [heldOpen, setHeldOpen] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const transactionKeyRef = useRef("");
+  const scannerBufferRef = useRef("");
+  const scannerLastRef = useRef(0);
 
   useEffect(() => setHeld(loadHeldOrders()), []);
+  useEffect(() => {
+    gasCall<GasPromotion[]>("getPromotions").then(rows => setPromotions(rows.filter(r => r.active !== false))).catch(() => {});
+    gasCall<GasVoucher[]>("getVouchers").then(rows => setVouchers(rows.filter(r => r.active !== false))).catch(() => {});
+  }, []);
+
+
+  const scanBarcode = (raw: string) => {
+    const barcode = normalizeScannedBarcode(raw);
+    if (!barcode) return;
+    const item = menus.find(menu => normalizeScannedBarcode(menu.barcode || "") === barcode);
+    if (!item) {
+      notify(`Barcode ${barcode} tidak terdaftar`);
+      return;
+    }
+    add(item);
+    notify(`${item.name} ditambahkan dari barcode`);
+  };
+
+  useEffect(() => {
+    const settings = loadHardwareSettings();
+    if (!settings.keyboardScanner) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (payOpen || cameraOpen || receipt) return;
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      const now = Date.now();
+      if (now - scannerLastRef.current > 120) scannerBufferRef.current = "";
+      scannerLastRef.current = now;
+      if (event.key === "Enter" || event.key === "Tab") {
+        const code = scannerBufferRef.current;
+        scannerBufferRef.current = "";
+        if (code.length >= 3) { event.preventDefault(); scanBarcode(code); }
+        return;
+      }
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        scannerBufferRef.current += event.key;
+        if (scannerBufferRef.current.length > 64) scannerBufferRef.current = scannerBufferRef.current.slice(-64);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menus, payOpen, cameraOpen, receipt]);
 
   const categories = useMemo(
     () => ["All", ...Array.from(new Set(menus.map(m => m.category || "Lainnya")))],
@@ -70,13 +134,29 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
       menus.filter(
         m =>
           (cat === "All" || (m.category || "Lainnya") === cat) &&
-          m.name.toLowerCase().includes(query.trim().toLowerCase())
+          (m.name.toLowerCase().includes(query.trim().toLowerCase()) || String(m.barcode || "").toLowerCase().includes(query.trim().toLowerCase()))
       ),
     [menus, cat, query]
   );
 
   const subtotal = useMemo(() => cart.reduce((sum, line) => sum + line.item.price * line.qty, 0), [cart]);
-  const discountValue = Math.max(0, Math.round(Number(discount.replace(/[^\d]/g, "")) || 0));
+  const rawDiscountValue = Math.max(0, Number(discount.replace(/[^\d.]/g, "")) || 0);
+  const manualDiscountPreview = discountType === "PERCENT" ? Math.round(subtotal * Math.min(rawDiscountValue, 100) / 100) : Math.round(rawDiscountValue);
+  const calcRule = (rule?: {type:string;value:number;minSpend:number;maxDiscount:number;startAt?:string;endAt?:string;active?:boolean;usageLimit?:number;usedCount?:number}) => {
+    if (!rule || rule.active === false || subtotal < Number(rule.minSpend || 0)) return 0;
+    if (Number(rule.usageLimit || 0) > 0 && Number(rule.usedCount || 0) >= Number(rule.usageLimit || 0)) return 0;
+    const now=Date.now(), start=rule.startAt?Date.parse(rule.startAt):NaN, end=rule.endAt?Date.parse(rule.endAt):NaN;
+    if ((Number.isFinite(start)&&now<start)||(Number.isFinite(end)&&now>end)) return 0;
+    let amount=rule.type === "PERCENT" ? Math.round(subtotal*Math.min(Number(rule.value)||0,100)/100) : Math.round(Number(rule.value)||0);
+    if(Number(rule.maxDiscount)>0) amount=Math.min(amount,Number(rule.maxDiscount)); return Math.max(0,amount);
+  };
+  const promoPreview = calcRule(promotions.find(r=>r.id===promoId));
+  const voucherPreview = calcRule(vouchers.find(r=>r.code.toUpperCase()===voucherCode.trim().toUpperCase()));
+  const pointValue = Number(settings?.loyaltyPointValue || 100);
+  const maxRedeemPoints = Math.min(Number(member?.points||0), Math.floor(subtotal * Number(settings?.maxRedeemPercent ?? 30) / 100 / Math.max(1,pointValue)));
+  const redeemPoints = Math.min(Math.max(0,Number(pointsToRedeem)||0),maxRedeemPoints);
+  const pointsPreview = redeemPoints * pointValue;
+  const discountValue = Math.min(subtotal, manualDiscountPreview + promoPreview + voucherPreview + pointsPreview);
   const totals = useMemo(() => previewTotals(subtotal, discountValue, settings), [subtotal, discountValue, settings]);
 
   const add = (item: GasMenu) => {
@@ -114,13 +194,26 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
         .filter(line => line.qty > 0)
     );
 
+  const lookupMember = async () => {
+    if (!customerPhone.trim()) { setMember(null); notify("Isi nomor telepon member"); return; }
+    try {
+      const found = await gasCall<GasCustomer | null>("findCustomer", {phone: customerPhone.trim()});
+      setMember(found);
+      if (found) { if (!customerName.trim()) setCustomerName(found.name || ""); notify(`Member ${found.memberCode || found.name} • ${found.points || 0} poin`); }
+      else notify("Member belum terdaftar; transaksi ini akan membuat member baru setelah nomor disimpan");
+    } catch (e) { notify(e instanceof Error ? e.message : "Gagal mencari member"); }
+  };
+
   const openPayment = () => {
     if (!cart.length) {
       notify("Keranjang masih kosong");
       return;
     }
+    transactionKeyRef.current = newClientOrderId("POS");
     setMethod("CASH");
     setPaidInput("");
+    setSplitMode(false);
+    setSplitPayments([{method:"CASH",amount:String(totals.total),received:String(totals.total)},{method:"QRIS",amount:"",received:""}]);
     setPayOpen(true);
   };
 
@@ -131,24 +224,51 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
 
   const paidAmount = Number(paidInput.replace(/[^\d]/g, "")) || 0;
   const change = method === "CASH" ? paidAmount - totals.total : 0;
+  const splitAllocated = splitPayments.reduce((sum,row)=>sum+(Number(row.amount.replace(/[^\d]/g,""))||0),0);
 
   const confirmPayment = async () => {
     if (submitting) return;
-    if (method === "CASH" && paidAmount < totals.total) {
-      notify("Uang yang dibayar kurang dari total");
-      return;
+    let paymentPayload: {method: PaymentMethod; paidAmount: number} | {payments: {method: PaymentMethod; amount: number; receivedAmount: number}[]} ;
+    if (splitMode) {
+      const rows = splitPayments.filter(row => Number(row.amount.replace(/[^\d]/g,"")) > 0).map(row => ({
+        method: row.method,
+        amount: Number(row.amount.replace(/[^\d]/g,"")) || 0,
+        receivedAmount: row.method === "CASH" ? (Number(row.received.replace(/[^\d]/g,"")) || 0) : (Number(row.amount.replace(/[^\d]/g,"")) || 0)
+      }));
+      const allocated = rows.reduce((sum,row)=>sum+row.amount,0);
+      if (rows.length < 2) { notify("Split payment membutuhkan minimal 2 metode"); return; }
+      if (new Set(rows.map(r=>r.method)).size !== rows.length) { notify("Metode split payment tidak boleh sama"); return; }
+      if (allocated !== totals.total) { notify(`Total alokasi split harus ${rupiah(totals.total)} (sekarang ${rupiah(allocated)})`); return; }
+      const badCash = rows.find(r=>r.method === "CASH" && r.receivedAmount < r.amount);
+      if (badCash) { notify("Uang tunai yang diterima kurang dari alokasi tunai"); return; }
+      paymentPayload = {payments: rows};
+    } else {
+      if (method === "CASH" && paidAmount < totals.total) { notify("Uang yang dibayar kurang dari total"); return; }
+      paymentPayload = {method, paidAmount: method === "CASH" ? paidAmount : totals.total};
     }
     setSubmitting(true);
     try {
       const order = await createOrderFromCart();
       if (!order) return;
-      const paid = method === "CASH" ? paidAmount : totals.total;
-      const paidOrder = await finalizePayment(order, method, paid);
+      const hardware = loadHardwareSettings();
+      if (hardware.autoPrintKitchen) {
+        try { await printKitchenOnce(order, hardware); }
+        catch (e) { notify(e instanceof Error ? `Order tersimpan, printer dapur: ${e.message}` : "Order tersimpan, printer dapur gagal"); }
+      }
+      const paidOrder = await finalizePayment(order, paymentPayload);
       if (paidOrder) {
+        const hardware = loadHardwareSettings();
+        if (hardware.autoPrintReceipt) {
+          try { await printReceiptDirect(paidOrder, storeName, hardware); }
+          catch (e) { notify(e instanceof Error ? `Pembayaran berhasil, printer struk: ${e.message}` : "Pembayaran berhasil, printer struk gagal"); }
+        }
+        const hasCash = splitMode ? ("payments" in paymentPayload && paymentPayload.payments.some(p=>p.method === "CASH")) : method === "CASH";
+        if (hasCash && hardware.openDrawerOnCash) {
+          try { await openCashDrawer(hardware); } catch (e) { notify(e instanceof Error ? `Pembayaran berhasil, cash drawer: ${e.message}` : "Pembayaran berhasil, cash drawer gagal"); }
+        }
         setReceipt(paidOrder);
         resetCart();
         setPayOpen(false);
-        // Stok berkurang di server: segarkan badge stok pada grid menu.
         refreshMenus();
       }
     } catch (e) {
@@ -170,8 +290,15 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
             channel: "POS",
             tableCode,
             customerName: customerName.trim(),
+            phone: customerPhone.trim(),
             note: orderNote.trim(),
-            discount: discountValue,
+            discount: manualDiscountPreview,
+            manualDiscountType: discountType,
+            manualDiscountValue: rawDiscountValue,
+            promoId,
+            voucherCode: voucherCode.trim().toUpperCase(),
+            pointsToRedeem: redeemPoints,
+            clientOrderId: transactionKeyRef.current || (transactionKeyRef.current = newClientOrderId("POS")),
             items: cart.map(line => ({menuItemId: line.item.id, name: line.item.name, qty: line.qty}))
           }
         })
@@ -188,19 +315,18 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
   };
 
   /** Membayar order yang baru dibuat. Mengembalikan null bila gagal (order tetap tersimpan). */
-  const finalizePayment = async (order: GasOrder, payMethod: PaymentMethod, paid: number): Promise<GasOrder | null> => {
+  const finalizePayment = async (order: GasOrder, payment: {method: PaymentMethod; paidAmount: number} | {payments: {method: PaymentMethod; amount: number; receivedAmount: number}[]}): Promise<GasOrder | null> => {
     try {
       return await fetch("/api/gas", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({action: "payOrder", payload: {id: order.id, method: payMethod, paidAmount: paid}})
+        body: JSON.stringify({action: "payOrder", payload: {id: order.id, ...payment}})
       }).then(async res => {
         const body = (await res.json()) as {ok?: boolean; data?: GasOrder; error?: string};
         if (!res.ok || !body.ok || !body.data) throw new Error(body.error || "Pembayaran gagal dicatat");
         return body.data;
       });
     } catch (err) {
-      // Order sudah tersimpan; kasir bisa menyelesaikan pembayaran di halaman Pesanan.
       notify(`Order ${order.id} tersimpan, pembayaran gagal: ${err instanceof Error ? err.message : "coba lagi"}`);
       return null;
     }
@@ -209,8 +335,15 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
   const resetCart = () => {
     setCart([]);
     setDiscount("");
+    setDiscountType("FIXED");
     setCustomerName("");
+    setCustomerPhone("");
+    setMember(null);
+    setPromoId("");
+    setVoucherCode("");
+    setPointsToRedeem("");
     setOrderNote("");
+    transactionKeyRef.current = "";
   };
 
   const holdOrder = () => {
@@ -278,13 +411,25 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
             </div>
             <span className="badge green">Register #01</span>
           </div>
-          <input
-            className="search"
-            placeholder="Cari menu..."
-            aria-label="Cari menu"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-          />
+          <div className="barcodeSearchRow">
+            <input
+              className="search"
+              placeholder="Cari menu / scan barcode..."
+              aria-label="Cari menu"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => {
+                if (e.key !== "Enter") return;
+                const exact = menus.find(menu => normalizeScannedBarcode(menu.barcode || "") === normalizeScannedBarcode(query));
+                if (exact) { e.preventDefault(); add(exact); setQuery(""); notify(`${exact.name} ditambahkan dari barcode`); }
+              }}
+            />
+            {loadHardwareSettings().cameraScanner ? (
+              <button type="button" className="btn" onClick={() => setCameraOpen(true)} title="Scan barcode dengan kamera">
+                <ScanBarcode size={16} aria-hidden="true" /> Kamera
+              </button>
+            ) : null}
+          </div>
           <div className="catRow" style={{marginTop: 10}}>
             {categories.map(c => (
               <button
@@ -345,23 +490,16 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
             Meja / Tipe
             <select className="input" value={tableCode} onChange={e => setTableCode(e.target.value)}>
               <option value="">Takeaway</option>
-              {tables.map(table => (
-                <option key={table.id} value={table.code}>
-                  {table.code} ({table.seats} kursi)
-                </option>
-              ))}
+              {tables.map(table => <option key={table.id} value={table.code}>{table.code} ({table.seats} kursi)</option>)}
             </select>
           </label>
-          <label className="label">
-            Nama pelanggan
-            <input
-              className="input"
-              value={customerName}
-              maxLength={80}
-              placeholder="Opsional"
-              onChange={e => setCustomerName(e.target.value)}
-            />
+          <label className="label">Nama pelanggan<input className="input" value={customerName} maxLength={80} placeholder="Opsional" onChange={e => setCustomerName(e.target.value)} /></label>
+          <label className="label">No. HP / Member
+            <div className="btnRow"><input className="input" value={customerPhone} maxLength={20} placeholder="08..." onChange={e=>{setCustomerPhone(e.target.value.replace(/[^\d+]/g,""));setMember(null);}} />
+              <button type="button" className="btn" onClick={lookupMember} title="Cari member"><UserRoundSearch size={15}/></button>
+            </div>
           </label>
+          {member?<div className="alert"><b>{member.memberCode || "MEMBER"}</b> • {member.name} • <b>{member.points || 0} poin</b></div>:null}
         </div>
 
         {!cart.length ? (
@@ -387,26 +525,21 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
         )}
 
         <div className="formGrid" style={{marginTop: 10}}>
-          <label className="label">
-            Diskon (Rp)
-            <input
-              className="input"
-              inputMode="numeric"
-              value={discount}
-              placeholder="0"
-              onChange={e => setDiscount(e.target.value.replace(/[^\d]/g, "").slice(0, 12))}
-            />
+          <label className="label">Diskon manual
+            <div className="btnRow"><select className="input" value={discountType} onChange={e=>setDiscountType(e.target.value as "FIXED"|"PERCENT")}><option value="FIXED">Rp</option><option value="PERCENT">%</option></select>
+              <input className="input" inputMode="decimal" value={discount} placeholder="0" onChange={e=>setDiscount(e.target.value.replace(/[^\d.]/g,"").slice(0,12))}/>
+            </div>
           </label>
-          <label className="label">
-            Catatan
-            <input
-              className="input"
-              value={orderNote}
-              maxLength={300}
-              placeholder="Opsional"
-              onChange={e => setOrderNote(e.target.value)}
-            />
+          <label className="label">Promo
+            <select className="input" value={promoId} onChange={e=>setPromoId(e.target.value)}><option value="">— Tanpa promo —</option>{promotions.filter(r=>r.active!==false).map(r=><option key={r.id} value={r.id}>{r.name} ({r.type==="PERCENT"?`${r.value}%`:rupiah(r.value)})</option>)}</select>
           </label>
+          <label className="label">Voucher
+            <input className="input" value={voucherCode} maxLength={40} placeholder="Kode voucher" onChange={e=>setVoucherCode(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g,""))}/>
+          </label>
+          <label className="label">Redeem poin {member?`(maks ${maxRedeemPoints})`:""}
+            <input className="input" inputMode="numeric" disabled={!member || settings?.loyaltyEnabled===false} value={pointsToRedeem} placeholder="0" onChange={e=>setPointsToRedeem(e.target.value.replace(/[^\d]/g,"").slice(0,10))}/>
+          </label>
+          <label className="label">Catatan<input className="input" value={orderNote} maxLength={300} placeholder="Opsional" onChange={e => setOrderNote(e.target.value)} /></label>
         </div>
 
         <div style={{marginTop: 14}}>
@@ -414,12 +547,10 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
             <span>Subtotal</span>
             <b>{rupiah(totals.subtotal)}</b>
           </div>
-          {totals.discount > 0 ? (
-            <div className="split muted" style={{marginTop: 6}}>
-              <span>Diskon</span>
-              <span>−{rupiah(totals.discount)}</span>
-            </div>
-          ) : null}
+          {manualDiscountPreview > 0 ? <div className="split muted" style={{marginTop:6}}><span>Diskon manual {discountType==="PERCENT"?`(${rawDiscountValue}%)`:""}</span><span>−{rupiah(Math.min(subtotal,manualDiscountPreview))}</span></div>:null}
+          {promoPreview > 0 ? <div className="split muted" style={{marginTop:6}}><span><BadgePercent size={13}/> Promo</span><span>−{rupiah(promoPreview)}</span></div>:null}
+          {voucherPreview > 0 ? <div className="split muted" style={{marginTop:6}}><span>Voucher {voucherCode}</span><span>−{rupiah(voucherPreview)}</span></div>:null}
+          {pointsPreview > 0 ? <div className="split muted" style={{marginTop:6}}><span>Redeem {redeemPoints} poin</span><span>−{rupiah(pointsPreview)}</span></div>:null}
           <div className="split muted" style={{marginTop: 6}}>
             <span>Pajak {Math.round((settings?.taxRate ?? 0) * 100) / 100}%</span>
             <span>{rupiah(totals.tax)}</span>
@@ -497,60 +628,32 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
               <b className="total">{rupiah(totals.total)}</b>
             </div>
 
-            <div className="segRow" role="radiogroup" aria-label="Metode pembayaran">
-              {PAYMENT_METHODS.map(m => (
-                <button
-                  type="button"
-                  key={m}
-                  className={`seg ${method === m ? "segOn" : ""}`}
-                  role="radio"
-                  aria-checked={method === m}
-                  onClick={() => setMethod(m)}
-                >
-                  {METHOD_ICON[m]} {PAYMENT_LABELS[m]}
-                </button>
-              ))}
-            </div>
-
-            {method === "CASH" ? (
-              <div>
-                <label className="label">
-                  Uang diterima
-                  <input
-                    className="input cashInput"
-                    inputMode="numeric"
-                    autoFocus
-                    value={paidInput ? Number(paidInput).toLocaleString("id-ID") : ""}
-                    aria-invalid={paidAmount > 0 && paidAmount < totals.total}
-                    onChange={e => setPaidInput(e.target.value.replace(/[^\d]/g, "").slice(0, 12))}
-                  />
-                </label>
-                <div className="btnRow" style={{marginTop: 8}}>
-                  <button type="button" className="btn" onClick={() => quickCash("exact")}>
-                    Pas
-                  </button>
-                  {[20000, 50000, 100000].map(v => (
-                    <button type="button" key={v} className="btn" onClick={() => quickCash(v)}>
-                      {v / 1000}rb
-                    </button>
-                  ))}
-                </div>
-                <div className="split" style={{marginTop: 12}}>
-                  <span>Kembalian</span>
-                  <b className={change < 0 ? "textRed" : "textGreen"}>{rupiah(Math.max(change, 0))}</b>
-                </div>
+            <div className="btnRow" style={{marginBottom:10}}><button type="button" className={`btn ${!splitMode?"primary":""}`} onClick={()=>setSplitMode(false)}>Satu Metode</button><button type="button" className={`btn ${splitMode?"primary":""}`} onClick={()=>setSplitMode(true)}>Split Payment</button></div>
+            {!splitMode ? <>
+              <div className="segRow" role="radiogroup" aria-label="Metode pembayaran">
+                {PAYMENT_METHODS.map(m => <button type="button" key={m} className={`seg ${method === m ? "segOn" : ""}`} role="radio" aria-checked={method === m} onClick={() => setMethod(m)}>{METHOD_ICON[m]} {PAYMENT_LABELS[m]}</button>)}
               </div>
-            ) : (
-              <p className="muted" style={{marginTop: 12}}>
-                Pembayaran non-tunai dicatat senilai total tagihan. Pastikan pembayaran diterima sebelum konfirmasi.
-              </p>
-            )}
+              {method === "CASH" ? <div><label className="label">Uang diterima<input className="input cashInput" inputMode="numeric" autoFocus value={paidInput ? Number(paidInput).toLocaleString("id-ID") : ""} aria-invalid={paidAmount > 0 && paidAmount < totals.total} onChange={e => setPaidInput(e.target.value.replace(/[^\d]/g, "").slice(0, 12))}/></label>
+                <div className="btnRow" style={{marginTop:8}}><button type="button" className="btn" onClick={()=>quickCash("exact")}>Pas</button>{[20000,50000,100000].map(v=><button type="button" key={v} className="btn" onClick={()=>quickCash(v)}>{v/1000}rb</button>)}</div>
+                <div className="split" style={{marginTop:12}}><span>Kembalian</span><b className={change<0?"textRed":"textGreen"}>{rupiah(Math.max(change,0))}</b></div></div>
+              : <p className="muted" style={{marginTop:12}}>Pembayaran non-tunai dicatat senilai total tagihan.</p>}
+            </> : <div>
+              {splitPayments.map((row,index)=><div key={index} style={{marginBottom:10}}><div className="formGrid"><label className="label">Metode {index+1}<select className="input" value={row.method} onChange={e=>setSplitPayments(list=>list.map((x,i)=>i===index?{...x,method:e.target.value as PaymentMethod}:x))}>{PAYMENT_METHODS.map(m=><option key={m} value={m}>{PAYMENT_LABELS[m]}</option>)}</select></label>
+                <label className="label">Alokasi (Rp)<input className="input" inputMode="numeric" value={row.amount} onChange={e=>setSplitPayments(list=>list.map((x,i)=>i===index?{...x,amount:e.target.value.replace(/[^\d]/g,"")}:x))}/></label>
+                {row.method==="CASH"?<label className="label">Tunai diterima<input className="input" inputMode="numeric" value={row.received} onChange={e=>setSplitPayments(list=>list.map((x,i)=>i===index?{...x,received:e.target.value.replace(/[^\d]/g,"")}:x))}/></label>:null}</div>{splitPayments.length>2?<button type="button" className="btn danger" style={{marginTop:6}} onClick={()=>setSplitPayments(list=>list.filter((_,i)=>i!==index))}><X size={14}/> Hapus metode</button>:null}</div>)}
+              <div className="split"><span>Alokasi</span><b className={splitAllocated===totals.total?"textGreen":"textRed"}>{rupiah(splitAllocated)} / {rupiah(totals.total)}</b></div>
+              <div className="btnRow" style={{marginTop:8}}><button type="button" className="btn" disabled={splitPayments.length>=5} onClick={()=>{const next=PAYMENT_METHODS.find(m=>!splitPayments.some(x=>x.method===m));if(next)setSplitPayments(list=>[...list,{method:next,amount:"",received:""}]);}}>+ Metode ({splitPayments.length}/5)</button>{splitPayments.length===2?<button type="button" className="btn" onClick={()=>{const first=Math.floor(totals.total/2);setSplitPayments([{...splitPayments[0],amount:String(first),received:String(first)},{...splitPayments[1],amount:String(totals.total-first)}]);}}>Bagi 50:50</button>:null}</div>
+            </div>}
 
             <button type="button" className="btn success fullWidth" style={{marginTop: 16}} disabled={submitting} onClick={confirmPayment}>
-              {submitting ? "Memproses..." : `Konfirmasi ${PAYMENT_LABELS[method]}`}
+              {submitting ? "Memproses..." : splitMode ? "Konfirmasi Split Payment" : `Konfirmasi ${PAYMENT_LABELS[method]}`}
             </button>
           </div>
         </div>
+      ) : null}
+
+      {cameraOpen ? (
+        <BarcodeScannerModal onClose={() => setCameraOpen(false)} onScan={barcode => { setCameraOpen(false); scanBarcode(barcode); }} />
       ) : null}
 
       {receipt ? (
@@ -562,6 +665,16 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
 
 export function ReceiptModal({order, storeName, onClose}: {order: GasOrder; storeName: string; onClose: () => void}) {
   const items = order.items || [];
+  let paymentRows = order.payments || [];
+  if (!paymentRows.length && order.paymentSummary) { try { paymentRows = JSON.parse(order.paymentSummary); } catch { paymentRows = []; } }
+  const [printStatus, setPrintStatus] = useState("");
+  const thermalPrint = async () => {
+    try {
+      const sent = await printReceiptDirect(order, storeName);
+      if (!sent) { window.print(); return; }
+      setPrintStatus("Struk dikirim ke printer thermal");
+    } catch (e) { setPrintStatus(e instanceof Error ? e.message : "Printer thermal gagal"); }
+  };
   return (
     <div className="modal" role="dialog" aria-modal="true" aria-label="Struk pembayaran">
       <div className="modalCard glass">
@@ -608,10 +721,8 @@ export function ReceiptModal({order, storeName, onClose}: {order: GasOrder; stor
               <span>TOTAL</span>
               <span>{rupiah(order.total)}</span>
             </div>
-            <div className="receiptLine muted">
-              <span>{PAYMENT_LABELS[(order.paymentMethod || "CASH") as PaymentMethod] || order.paymentMethod}</span>
-              <span>{rupiah(Number(order.paidAmount) || order.total)}</span>
-            </div>
+            {paymentRows.length > 1 ? paymentRows.map((pay,idx)=><div className="receiptLine muted" key={`${pay.method}-${idx}`}><span>{PAYMENT_LABELS[pay.method as PaymentMethod] || pay.method}</span><span>{rupiah(Number(pay.amount)||0)}</span></div>) : <div className="receiptLine muted"><span>{PAYMENT_LABELS[(order.paymentMethod || "CASH") as PaymentMethod] || order.paymentMethod}</span><span>{rupiah(Number(order.total)||0)}</span></div>}
+            {order.memberCode ? <div className="receiptLine muted"><span>Member {order.memberCode}</span><span>{Number(order.pointsEarned)||0} poin +</span></div> : null}
             {Number(order.changeAmount) > 0 ? (
               <div className="receiptLine">
                 <span>Kembalian</span>
@@ -622,10 +733,12 @@ export function ReceiptModal({order, storeName, onClose}: {order: GasOrder; stor
           <div className="receiptFoot">Terima kasih • Simpan struk ini</div>
         </div>
 
+        {printStatus ? <p className="muted noPrint">{printStatus}</p> : null}
         <div className="btnRow" style={{marginTop: 14}}>
-          <button type="button" className="btn primary noPrint" onClick={() => window.print()}>
+          <button type="button" className="btn primary noPrint" onClick={thermalPrint}>
             <Printer size={15} aria-hidden="true" /> Cetak Struk
           </button>
+          <button type="button" className="btn noPrint" onClick={() => window.print()}>Browser Print</button>
           <button type="button" className="btn noPrint" onClick={onClose}>
             Transaksi Baru
           </button>

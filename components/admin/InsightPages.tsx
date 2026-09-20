@@ -20,7 +20,7 @@ export function Dashboard({tables, setPage}: {tables: GasTable[]; setPage: (page
   const lowStock = inventory.filter(item => Number(item.stock) <= Number(item.parLevel));
   const occupied = useMemo(() => {
     const active = new Set(
-      orders.filter(o => !["PAID", "CANCELLED"].includes(o.status) && o.tableCode).map(o => o.tableCode.toLowerCase())
+      orders.filter(o => !["PAID", "CANCELLED", "REFUNDED"].includes(o.status) && o.tableCode).map(o => o.tableCode.toLowerCase())
     );
     return tables.filter(t => active.has(String(t.code).toLowerCase())).length;
   }, [orders, tables]);
@@ -32,8 +32,8 @@ export function Dashboard({tables, setPage}: {tables: GasTable[]; setPage: (page
     <div className="grid" style={{gap: 16}}>
       <div className="grid stats">
         <Stat label="Penjualan Hari Ini" value={report ? rupiah(report.netSales) : "…"} trend={`${report?.orderCount ?? 0} order`} />
-        <Stat label="Rata-rata Check" value={report ? rupiah(report.avgCheck) : "…"} trend="gross margin terjaga" />
-        <Stat label="Sudah Dibayar" value={String(report?.statusCount?.PAID ?? 0)} trend="transaksi lunas" />
+        <Stat label="Rata-rata Check" value={report ? rupiah(report.avgCheck) : "…"} trend="hanya transaksi lunas" />
+        <Stat label="Gross Profit" value={report ? rupiah(report.grossProfit ?? 0) : "…"} trend={`${report?.grossMargin ?? 0}% margin`} />
         <Stat label="Meja Terisi" value={`${occupied} / ${tables.length}`} trend="occupancy real-time" />
       </div>
 
@@ -191,12 +191,19 @@ export function ReportsPage() {
     if (!report) return;
     const lines: string[] = [];
     lines.push(`Laporan Kastriva,${report.range}`);
-    lines.push(`Order,${report.orderCount}`);
+    lines.push(`Transaksi Lunas,${report.orderCount}`);
+    lines.push(`Total Order Masuk,${report.totalOrders ?? report.orderCount}`);
     lines.push(`Gross Sales,${report.grossSales}`);
     lines.push(`Diskon,${report.discount}`);
     lines.push(`Pajak,${report.tax}`);
     lines.push(`Service,${report.service}`);
     lines.push(`Net Sales,${report.netSales}`);
+    lines.push(`COGS,${report.cogs ?? 0}`);
+    lines.push(`Gross Profit,${report.grossProfit ?? 0}`);
+    lines.push(`Gross Margin %,${report.grossMargin ?? 0}`);
+    lines.push(`Outstanding,${report.outstandingSales ?? 0}`);
+    lines.push(`Refund,${report.refundedSales ?? 0}`);
+    lines.push(`Jumlah Refund,${report.refundCount ?? 0}`);
     lines.push("");
     lines.push("Tanggal,Total");
     report.series.forEach(p => lines.push(`${p.date},${p.total}`));
@@ -221,7 +228,7 @@ export function ReportsPage() {
         <div className="split">
           <div>
             <h2>Executive Reports</h2>
-            <p className="muted">Sales, pajak, service, dan margin — data live dari backend</p>
+            <p className="muted">Sales, COGS, gross profit, pajak, service, dan margin — data live dari backend</p>
           </div>
           <div className="btnRow">
             <button type="button" className="iconBtn" aria-label="Muat ulang" onClick={reportRes.reload}>
@@ -253,12 +260,19 @@ export function ReportsPage() {
         ) : report ? (
           <>
             {[
-              ["Order", String(report.orderCount)],
+              ["Transaksi Lunas", String(report.orderCount)],
+              ["Total Order Masuk", String(report.totalOrders ?? report.orderCount)],
               ["Gross Sales", rupiah(report.grossSales)],
               ["Diskon", rupiah(report.discount)],
               ["Pajak", rupiah(report.tax)],
               ["Service", rupiah(report.service)],
               ["Net Sales", rupiah(report.netSales)],
+              ["COGS", rupiah(report.cogs ?? 0)],
+              ["Gross Profit", rupiah(report.grossProfit ?? 0)],
+              ["Gross Margin", `${report.grossMargin ?? 0}%`],
+              ["Outstanding", rupiah(report.outstandingSales ?? 0)],
+              ["Refund", rupiah(report.refundedSales ?? 0)],
+              ["Jumlah Refund", String(report.refundCount ?? 0)],
               ["Rata-rata Check", rupiah(report.avgCheck)]
             ].map(([label, value]) => (
               <div className="split rowLine" key={label}>
@@ -319,7 +333,8 @@ export function OnlinePage({tables}: {tables: GasTable[]}) {
   }, [tables.length]);
 
   const table = tables.find(t => t.code === selected) || tables[0];
-  const path = table ? `/customer/${STORE_ID}/${table.code}` : `/customer/${STORE_ID}`;
+  const currentStoreId = table?.storeId || STORE_ID;
+  const path = table ? `/customer/${currentStoreId}/${table.code}` : `/customer/${currentStoreId}`;
   const url = origin ? `${origin}${path}` : path;
 
   const copy = async () => {

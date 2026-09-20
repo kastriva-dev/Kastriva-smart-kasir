@@ -3,6 +3,7 @@ import {useEffect, useRef, useState} from "react";
 import Image from "next/image";
 import {useRouter} from "next/navigation";
 import {
+  Activity,
   BarChart3,
   Bell,
   BookOpen,
@@ -10,19 +11,24 @@ import {
   ChefHat,
   CircleHelp,
   ClipboardList,
+  Crown,
   Grid2X2,
   LayoutDashboard,
   LogOut,
   Menu as MenuIcon,
   Package,
+  BadgePercent,
   QrCode,
   Settings,
+  ScanBarcode,
   ShoppingCart,
+  Clock3,
+  UserRound,
   Users,
   WifiOff
 } from "lucide-react";
 import type {LucideIcon} from "lucide-react";
-import {fetchPublicMenu, fetchPublicSettings, type GasMenu, type GasSettings, type GasTable} from "@/lib/api";
+import {fetchPublicMenu, fetchPublicSettings, type GasMenu, type GasSettings, type GasStore, type GasTable, type SessionInfo} from "@/lib/api";
 import {useOnline, useResource} from "@/components/admin/useResource";
 import {gasCall} from "@/lib/api";
 import PosPage from "@/components/admin/PosPage";
@@ -30,29 +36,36 @@ import {KitchenPage, OrdersPage} from "@/components/admin/OrderPages";
 import GuideModal from "@/components/admin/GuideModal";
 import {
   CustomersPage,
-  InventoryPage,
   MenuManagerPage,
   ReservationsPage,
   StaffPage,
   TablesPage
 } from "@/components/admin/ManagerPages";
 import {Dashboard, OnlinePage, ReportsPage, SettingsPage} from "@/components/admin/InsightPages";
+import ShiftPage from "@/components/admin/ShiftPage";
+import InventoryProPage from "@/components/admin/InventoryProPage";
+import HardwarePage from "@/components/admin/HardwarePage";
+import PromoLoyaltyPage from "@/components/admin/PromoLoyaltyPage";
+import {AdvancedAnalyticsPage, OwnerSaasPage} from "@/components/admin/SaasPages";
 
 const nav: readonly [string, LucideIcon][] = [
-  ["Dashboard", LayoutDashboard],
-  ["POS", ShoppingCart],
-  ["Pesanan", ClipboardList],
-  ["Dapur", ChefHat],
-  ["Meja", Grid2X2],
-  ["Reservasi", CalendarDays],
-  ["Menu", BookOpen],
-  ["Inventory", Package],
-  ["Pelanggan", Users],
-  ["Staff", Users],
-  ["Laporan", BarChart3],
-  ["QR & Online", QrCode],
-  ["Pengaturan", Settings]
+  ["Dashboard", LayoutDashboard], ["POS", ShoppingCart], ["Pesanan", ClipboardList], ["Dapur", ChefHat],
+  ["Meja", Grid2X2], ["Reservasi", CalendarDays], ["Menu", BookOpen], ["Inventory", Package],
+  ["Promo & Loyalty", BadgePercent], ["Pelanggan", Users], ["Shift", Clock3], ["Staff", Users], ["Laporan", BarChart3],
+  ["Analytics", Activity], ["QR & Online", QrCode], ["Perangkat", ScanBarcode], ["Owner & SaaS", Crown], ["Pengaturan", Settings]
 ];
+
+const ROLE_PAGES: Record<string, string[]> = {
+  admin: nav.map(([label]) => label),
+  manager: nav.map(([label]) => label).filter(label => label !== "Owner & SaaS"),
+  cashier: ["POS", "Pesanan", "Reservasi", "Pelanggan", "Shift", "Perangkat"],
+  kitchen: ["Dapur", "Pesanan", "Shift"],
+  barista: ["Dapur", "Pesanan", "Shift"],
+  waiter: ["Pesanan", "Meja", "Reservasi", "Pelanggan", "Shift"],
+  staff: ["Pesanan", "Shift"]
+};
+
+const ROLE_DEFAULT: Record<string, string> = {admin:"Dashboard", manager:"Dashboard", cashier:"Shift", kitchen:"Shift", barista:"Shift", waiter:"Shift", staff:"Shift"};
 
 export default function AdminApp() {
   const router = useRouter();
@@ -62,10 +75,37 @@ export default function AdminApp() {
   const [toast, setToast] = useState("");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const online = useOnline();
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [outletStores, setOutletStores] = useState<GasStore[]>([]);
+  const [outletSwitching, setOutletSwitching] = useState(false);
 
-  const settingsRes = useResource<GasSettings>(() => fetchPublicSettings(), 300_000);
-  const menusRes = useResource<GasMenu[]>(() => fetchPublicMenu(), 120_000);
+  useEffect(() => {
+    fetch("/api/auth/session", {cache:"no-store"}).then(r => r.json()).then(body => {
+      const info = body?.data as SessionInfo | undefined;
+      if (!info?.authenticated) return;
+      setSession(info);
+      setPage(ROLE_DEFAULT[info.role || "staff"] || "Pesanan");
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (session?.role !== "admin") return;
+    gasCall<GasStore[]>("getStores").then(setOutletStores).catch(() => setOutletStores([]));
+  }, [session?.role]);
+
+  const sessionStoreId = session?.storeId || "";
+  const settingsRes = useResource<GasSettings>(() => fetchPublicSettings(sessionStoreId), 300_000);
+  const menusRes = useResource<GasMenu[]>(() => fetchPublicMenu(sessionStoreId), 120_000);
   const tablesRes = useResource<GasTable[]>(() => gasCall<GasTable[]>("getTables"), 60_000);
+
+  useEffect(() => {
+    if (!session) return;
+    settingsRes.reload();
+    menusRes.reload();
+    tablesRes.reload();
+    // Resource fetchers always point at the latest session/outlet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.storeId]);
 
   const menus = menusRes.data || [];
   const tables = tablesRes.data || [];
@@ -108,6 +148,24 @@ export default function AdminApp() {
   };
 
   const storeName = settingsRes.data?.storeName || process.env.NEXT_PUBLIC_STORE_NAME || "Kastriva Smart Kasir";
+  const role = session?.role || "staff";
+  const allowedPages = ROLE_PAGES[role] || ROLE_PAGES.staff;
+  const allowedNav = nav.filter(([label]) => allowedPages.includes(label));
+  const activeStoreId = session?.storeId || settingsRes.data?.storeId || outletStores[0]?.id || "";
+
+  const switchOutlet = async (storeId: string) => {
+    if (!storeId || storeId === activeStoreId || outletSwitching) return;
+    setOutletSwitching(true);
+    try {
+      const res = await fetch("/api/auth/outlet", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({storeId})});
+      const body = await res.json() as {ok?:boolean;error?:string};
+      if (!res.ok || !body.ok) throw new Error(body.error || "Gagal mengganti outlet");
+      window.location.reload();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Gagal mengganti outlet");
+      setOutletSwitching(false);
+    }
+  };
 
   const render = () => {
     if (page === "POS")
@@ -121,22 +179,29 @@ export default function AdminApp() {
           refreshMenus={menusRes.reload}
         />
       );
-    if (page === "Pesanan") return <OrdersPage notify={notify} />;
-    if (page === "Dapur") return <KitchenPage notify={notify} />;
+    if (page === "Pesanan") return <OrdersPage notify={notify} role={session?.role || "staff"} storeName={storeName} />;
+    if (page === "Dapur") return <KitchenPage notify={notify} role={session?.role || "staff"} />;
     if (page === "Meja") return <TablesPage tables={tables} reloadTables={tablesRes.reload} notify={notify} />;
     if (page === "Reservasi") return <ReservationsPage notify={notify} />;
     if (page === "Menu") return <MenuManagerPage menus={menus} reloadMenus={menusRes.reload} notify={notify} />;
-    if (page === "Inventory") return <InventoryPage notify={notify} />;
+    if (page === "Inventory") return <InventoryProPage menus={menus} reloadMenus={menusRes.reload} notify={notify} />;
+    if (page === "Promo & Loyalty") return <PromoLoyaltyPage settings={settingsRes.data} reloadSettings={settingsRes.reload} notify={notify} />;
     if (page === "Pelanggan") return <CustomersPage />;
+    if (page === "Shift" && session) return <ShiftPage session={session} notify={notify} />;
     if (page === "Staff") return <StaffPage notify={notify} />;
     if (page === "Laporan") return <ReportsPage />;
+    if (page === "Analytics") return <AdvancedAnalyticsPage />;
+    if (page === "Owner & SaaS") return <OwnerSaasPage notify={notify} selectedStoreId={activeStoreId} />;
     if (page === "QR & Online") return <OnlinePage tables={tables} />;
+    if (page === "Perangkat") return <HardwarePage notify={notify} />;
     if (page === "Pengaturan")
       return (
         <SettingsPage settings={settingsRes.data} reloadSettings={settingsRes.reload} notify={notify} />
       );
     return <Dashboard tables={tables} setPage={setPage} />;
   };
+
+  if (!session) return <main className="hero"><div className="card glass"><p className="muted">Memuat session staff...</p></div></main>;
 
   return (
     <div className="app">
@@ -145,11 +210,11 @@ export default function AdminApp() {
           <Image src="/brand/logo.png" alt="Kastriva" width={44} height={44} />
           <div>
             <b>KASTRIVA SMART</b>
-            <small>Enterprise POS</small>
+            <small>POS Pro • {session ? String(session.role).toUpperCase() : "..."}</small>
           </div>
         </div>
         <nav className="nav">
-          {nav.map(([label, Icon]) => (
+          {allowedNav.map(([label, Icon]) => (
             <button
               key={label}
               type="button"
@@ -197,6 +262,12 @@ export default function AdminApp() {
             </p>
           </div>
           <div className="topActions">
+            {session?.role === "admin" && outletStores.length ? (
+              <select className="input" aria-label="Pilih outlet aktif" value={activeStoreId} disabled={outletSwitching} onChange={e => void switchOutlet(e.target.value)} style={{width:190}}>
+                {outletStores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+              </select>
+            ) : null}
+            {session ? <span className="badge"><UserRound size={13} aria-hidden="true" /> {session.name || session.username}</span> : null}
             {!online ? (
               <span className="badge red offlineBadge">
                 <WifiOff size={13} aria-hidden="true" /> Offline
@@ -214,9 +285,9 @@ export default function AdminApp() {
             <button type="button" className="iconBtn" aria-label="Notifikasi">
               <Bell size={18} aria-hidden="true" />
             </button>
-            <button type="button" className="btn primary hideSm" onClick={() => setPage("POS")}>
+            {allowedPages.includes("POS") ? <button type="button" className="btn primary hideSm" onClick={() => setPage("POS")}>
               <ShoppingCart size={16} aria-hidden="true" /> New Order
-            </button>
+            </button> : null}
           </div>
         </header>
         {render()}

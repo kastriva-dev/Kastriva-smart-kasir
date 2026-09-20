@@ -1,6 +1,6 @@
 {
   "name": "kastriva-smart-kasir-enterprise",
-  "version": "2.0.0",
+  "version": "2.5.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -8,9 +8,10 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"tests/**/*.test.mjs\"",
+    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"tests/**/*.test.mjs\"",
     "auth:hash": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/make-auth-hash.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "license:make": "node scripts/make-license.mjs"
   },
   "dependencies": {
     "lucide-react": "0.468.0",

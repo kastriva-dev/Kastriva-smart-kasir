@@ -1,6 +1,6 @@
 "use client";
 import {useEffect, useMemo, useState} from "react";
-import {Plus, QrCode, RefreshCw} from "lucide-react";
+import {Plus, QrCode, RefreshCw, ScanBarcode} from "lucide-react";
 import QrCanvas from "@/components/QrCanvas";
 import {STORE_ID, rupiah} from "@/lib/data";
 import {
@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import {useResource} from "@/components/admin/useResource";
 import {EmptyState, ErrorState, Field, Modal, Skeleton} from "@/components/admin/ui";
+import BarcodeScannerModal from "@/components/admin/BarcodeScannerModal";
 
 /* ================= Meja ================= */
 
@@ -148,7 +149,7 @@ export function TablesPage({tables, reloadTables, notify}: {
 export function QrModal({table, onClose}: {table: GasTable; onClose: () => void}) {
   const [origin, setOrigin] = useState("");
   useEffect(() => setOrigin(window.location.origin), []);
-  const path = `/customer/${STORE_ID}/${table.code}`;
+  const path = `/customer/${table.storeId || STORE_ID}/${table.code}`;
   const url = origin ? `${origin}${path}` : path;
   const [copied, setCopied] = useState("");
 
@@ -189,6 +190,7 @@ type MenuDraft = {
   stock: string;
   emoji: string;
   description: string;
+  barcode: string;
   active: boolean;
 };
 
@@ -201,6 +203,7 @@ const emptyDraft: MenuDraft = {
   stock: "",
   emoji: "",
   description: "",
+  barcode: "",
   active: true
 };
 
@@ -213,6 +216,7 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
   const categories = catsRes.data || [];
   const [draft, setDraft] = useState<MenuDraft | null>(null);
   const [busy, setBusy] = useState(false);
+  const [barcodeCamera, setBarcodeCamera] = useState(false);
 
   const openNew = () => setDraft({...emptyDraft});
   const openEdit = (item: GasMenu) =>
@@ -226,6 +230,7 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
       stock: item.stock === "" || item.stock === null || item.stock === undefined ? "" : String(item.stock),
       emoji: item.emoji || "",
       description: item.description || "",
+      barcode: item.barcode || "",
       active: item.active !== false
     });
 
@@ -266,6 +271,7 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
         categoryId: item.categoryId || "",
         emoji: item.emoji || "",
         description: item.description || "",
+        barcode: item.barcode || "",
         active: item.active === false
       });
       reloadMenus();
@@ -304,6 +310,7 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
                 <th scope="col">Modal</th>
                 <th scope="col">Margin</th>
                 <th scope="col">Stok</th>
+                <th scope="col">Barcode</th>
                 <th scope="col">Status</th>
                 <th scope="col">Aksi</th>
               </tr>
@@ -319,6 +326,7 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
                   <td>{rupiah(item.cost || 0)}</td>
                   <td>{item.price > 0 ? Math.round((1 - (item.cost || 0) / item.price) * 100) : 0}%</td>
                   <td>{item.stock === "" || item.stock === null || item.stock === undefined ? "—" : String(item.stock)}</td>
+                  <td><code>{item.barcode || "—"}</code></td>
                   <td>
                     <button type="button" className={`badge ${item.active !== false ? "green" : "red"}`} onClick={() => toggleActive(item)}>
                       {item.active !== false ? "AKTIF" : "OFF"}
@@ -379,6 +387,13 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
               <input className="input" inputMode="numeric" value={draft.stock}
                 onChange={e => setDraft({...draft, stock: e.target.value.replace(/[^\d]/g, "").slice(0, 6)})} />
             </Field>
+            <Field label="Barcode / SKU">
+              <div className="barcodeFieldRow">
+                <input className="input" value={draft.barcode} maxLength={64} inputMode="text" placeholder="Scan atau ketik barcode"
+                  onChange={e => setDraft({...draft, barcode: e.target.value.replace(/\s/g, "").toUpperCase()})} />
+                <button type="button" className="iconBtn" aria-label="Scan barcode kamera" title="Scan barcode kamera" onClick={() => setBarcodeCamera(true)}><ScanBarcode size={16} /></button>
+              </div>
+            </Field>
             <Field label="Deskripsi">
               <input className="input" value={draft.description} maxLength={300}
                 onChange={e => setDraft({...draft, description: e.target.value})} />
@@ -392,6 +407,12 @@ export function MenuManagerPage({menus, reloadMenus, notify}: {
             {busy ? "Menyimpan..." : "Simpan Menu"}
           </button>
         </Modal>
+      ) : null}
+      {barcodeCamera && draft ? (
+        <BarcodeScannerModal
+          onClose={() => setBarcodeCamera(false)}
+          onScan={barcode => { setDraft({...draft, barcode}); setBarcodeCamera(false); }}
+        />
       ) : null}
     </div>
   );
@@ -427,6 +448,7 @@ async function saveMenuWithCategory(
     stock: draft.stock === "" ? "" : Number(draft.stock) || 0,
     emoji: draft.emoji,
     description: draft.description,
+    barcode: draft.barcode,
     active: draft.active
   });
 }
@@ -727,7 +749,7 @@ export function CustomersPage() {
       <div className="split">
         <div>
           <h2>CRM Pelanggan</h2>
-          <p className="muted">Otomatis dari pesanan dengan nomor telepon • {rows.length} pelanggan</p>
+          <p className="muted">Membership otomatis dari nomor telepon • poin, kunjungan & lifetime value • {rows.length} pelanggan</p>
         </div>
         <button type="button" className="iconBtn" aria-label="Muat ulang" onClick={custRes.reload}>
           <RefreshCw size={16} aria-hidden="true" />
@@ -742,7 +764,9 @@ export function CustomersPage() {
             <thead>
               <tr>
                 <th scope="col">Nama</th>
+                <th scope="col">Member</th>
                 <th scope="col">Telepon</th>
+                <th scope="col">Poin</th>
                 <th scope="col">Kunjungan</th>
                 <th scope="col">Total Belanja</th>
                 <th scope="col">Terakhir</th>
@@ -752,7 +776,9 @@ export function CustomersPage() {
               {rows.map(row => (
                 <tr key={row.id}>
                   <td><b>{row.name}</b></td>
+                  <td><code>{row.memberCode || "—"}</code></td>
                   <td>{row.phone || "—"}</td>
+                  <td><b>{row.points || 0}</b></td>
                   <td>{row.visits}×</td>
                   <td>{rupiah(row.totalSpend)}</td>
                   <td className="muted">{row.updatedAt ? formatDay(row.updatedAt) : "—"}</td>
@@ -869,7 +895,7 @@ export function StaffPage({notify}: {notify: (message: string) => void}) {
                     <b>{row.name}</b>
                   </td>
                   <td>{row.role || "staff"}</td>
-                  <td>{row.pinHash ? <span className="badge green">Terpasang</span> : <span className="badge">Belum</span>}</td>
+                  <td>{row.hasPin ? <span className="badge green">Terpasang</span> : <span className="badge">Belum</span>}</td>
                   <td>
                     <button
                       type="button"

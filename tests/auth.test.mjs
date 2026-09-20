@@ -96,9 +96,12 @@ test("verifySession menolak saat secret kosong", async () => {
   assert.equal(await verifySession(token, ""), null);
 });
 
-test("role selain cashier dinormalkan ke admin", async () => {
-  const token = await signSession({sub: "x", role: "cashier"}, SECRET);
-  assert.equal((await verifySession(token, SECRET)).role, "cashier");
+test("session mempertahankan role staff dan identitas display", async () => {
+  const token = await signSession({sub: "stf-1", role: "manager", name:"Maya", storeId:"store-001"}, SECRET);
+  const payload = await verifySession(token, SECRET);
+  assert.equal(payload.role, "manager");
+  assert.equal(payload.name, "Maya");
+  assert.equal(payload.storeId, "store-001");
 });
 
 test("safeNextPath memblokir open redirect", () => {

@@ -170,3 +170,18 @@
   .menuList{grid-template-columns:1fr}
 }
 @media(min-width:901px){.custBar{display:none}}
+
+/* ============================================================
+   Stage 4: barcode scanner & hardware POS
+   ============================================================ */
+.barcodeSearchRow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.barcodeSearchRow .search{width:100%}
+.scannerView{position:relative;overflow:hidden;border-radius:16px;border:1px solid var(--line);background:#020a14;aspect-ratio:4/3;margin-top:12px}
+.scannerView video{width:100%;height:100%;object-fit:cover;display:block}
+.scannerView:after{content:"";position:absolute;left:12%;right:12%;top:50%;height:2px;background:var(--red);box-shadow:0 0 14px rgba(255,107,122,.8)}
+.hardwareCard{min-width:0}
+.hardwareSupport{display:flex;gap:8px;flex-wrap:wrap}
+.hardwareSupport .badge{gap:6px;align-items:center}
+.hardwareStatus{margin:10px 0 0;word-break:break-word}
+@media(max-width:560px){.barcodeSearchRow{grid-template-columns:1fr}.barcodeSearchRow .btn{width:100%}.hardwareSupport{display:grid;grid-template-columns:1fr}}
+.barcodeFieldRow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center}

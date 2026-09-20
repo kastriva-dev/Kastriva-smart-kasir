@@ -12,8 +12,8 @@ const topics: Topic[] = [
     body: (
       <ul>
         <li>
-          Masuk dengan username &amp; password admin (diatur lewat <code>ADMIN_USERNAME</code> dan{" "}
-          <code>ADMIN_PASSWORD_HASH</code> di Vercel).
+          Pemilik masuk lewat tab <b>Pemilik / Admin</b> dengan username &amp; password environment. Staff operasional
+          masuk lewat tab <b>Staff / Kasir</b> menggunakan nama + PIN yang dibuat Admin.
         </li>
         <li>
           Buka <b>Pengaturan</b>: isi nama toko, pajak (%), dan service charge (%) — angka ini otomatis
@@ -73,7 +73,7 @@ const topics: Topic[] = [
           pelanggan / meja, dan klik chevron ▾ untuk melihat rincian item.
         </li>
         <li>
-          Ubah status lewat dropdown: NEW → CONFIRMED → COOKING → READY → SERVED → PAID (atau CANCELLED).
+          Ubah status operasional lewat dropdown: NEW → CONFIRMED → COOKING → READY → SERVED. PAID hanya melalui pembayaran. CANCELLED wajib alasan dan mengembalikan stok; transaksi PAID menggunakan Refund.
         </li>
         <li>
           Order yang belum lunas punya tombol <b>Bayar</b> — cocok untuk order QR yang dibayar di kasir.
@@ -123,8 +123,16 @@ const topics: Topic[] = [
           customer tanpa menghapusnya.
         </li>
         <li>
-          <b>Inventory</b>: daftar bahan dengan stok dan par level. Badge <b>RESTOCK</b> menyala saat stok ≤
-          par level, dan jumlahnya muncul sebagai &quot;Stok kritis&quot; di Dashboard.
+          <b>Inventory Pro</b> memiliki 5 tab: Bahan, Pergerakan, Supplier, Pembelian, dan Resep. Semua perubahan stok penting
+          masuk <b>Stock Movement Ledger</b> agar dapat ditelusuri.
+        </li>
+        <li>
+          Gunakan <b>Aksi Stok</b> untuk Stock Opname, Waste/Rusak, atau Adjustment. Untuk restock dari vendor, buat
+          Purchase berstatus DRAFT lalu klik <b>Terima</b> saat barang benar-benar datang.
+        </li>
+        <li>
+          Di tab <b>Resep</b>, hubungkan menu ke bahan dan qty per porsi. Saat menu terjual, stok bahan otomatis berkurang;
+          cancel/refund dengan restock mengembalikan bahan berdasarkan movement transaksi asli.
         </li>
       </ul>
     )
@@ -151,14 +159,83 @@ const topics: Topic[] = [
     )
   },
   {
+    id: "shift",
+    label: "Staff Login & Shift",
+    body: (
+      <ul>
+        <li>
+          Admin membuat staff di menu <b>Staff</b>, memilih role, lalu menetapkan PIN 4–8 digit. Setelah logout,
+          staff dapat masuk melalui tab <b>Staff / Kasir</b>.
+        </li>
+        <li>
+          Staff non-Admin harus membuka <b>Shift</b> sebelum membuat transaksi POS atau menerima pembayaran. Isi
+          Register ID (mis. KASIR-01) dan modal awal tunai.
+        </li>
+        <li>
+          Transaksi menyimpan identitas staff, shift, dan register secara otomatis sehingga jejak audit dapat
+          ditelusuri per operator.
+        </li>
+        <li>
+          Saat tutup shift, masukkan uang tunai fisik. Sistem menghitung <b>Expected Cash</b> dari modal awal +
+          penjualan tunai − refund tunai, lalu menampilkan selisih kas.
+        </li>
+        <li>
+          Role membatasi akses di UI dan API: Refund hanya Admin/Manager; pembayaran hanya Admin/Manager/Kasir;
+          Kitchen/Barista fokus alur dapur; Waiter fokus pesanan, meja, reservasi, dan pelanggan.
+        </li>
+      </ul>
+    )
+  },
+  {
+    id: "promo-loyalty",
+    label: "Promo, Loyalty & Split",
+    body: (
+      <ul>
+        <li><b>Promo &amp; Loyalty</b> dipakai Admin/Manager untuk membuat promo persen/nominal, voucher berkode, periode aktif, minimum belanja, batas diskon, dan kuota voucher.</li>
+        <li>Di POS, cari pelanggan lewat nomor telepon untuk melihat Member Code dan saldo poin. Redeem poin dibatasi oleh konfigurasi toko dan dihitung ulang oleh server.</li>
+        <li>Poin reward baru diberikan setelah transaksi PAID. Refund membalik poin reward dan mengembalikan poin redeem secara otomatis.</li>
+        <li><b>Split Payment</b> membagi satu tagihan ke beberapa metode; setiap alokasi tersimpan terpisah sehingga laporan dan shift tetap akurat.</li>
+        <li><b>Split Bill</b> di halaman Pesanan memindahkan item/qty ke bill baru tanpa mengurangi stok lagi. Lakukan split sebelum menerapkan diskon/promo/voucher/redeem poin.</li>
+      </ul>
+    )
+  },
+  {
+    id: "hardware",
+    label: "Barcode & Perangkat",
+    body: (
+      <ul>
+        <li><b>Menu</b> sekarang memiliki Barcode/SKU unik. Scanner USB keyboard-wedge dapat langsung menambah item di POS; tombol Kamera memakai kamera HP bila browser mendukung.</li>
+        <li>Buka <b>Perangkat</b> untuk mengatur Receipt Printer dan Kitchen Printer per PC/HP. Pilih Browser Print, USB/Serial ESC/POS, atau BLE yang kompatibel.</li>
+        <li>Direct printer perlu klik <b>Hubungkan</b> pada sesi browser. Gunakan <b>Test</b> sebelum mengaktifkan auto-print.</li>
+        <li>Kitchen printer dapat memakai printer struk yang sama atau printer terpisah. KDS menandai order yang sudah dicetak agar polling tidak menduplikasi tiket.</li>
+        <li>Cash drawer yang terhubung ke printer ESC/POS dapat dibuka dengan pulse printer dan dapat diaktifkan otomatis khusus pembayaran tunai.</li>
+        <li>Web Serial/Bluetooth/kamera membutuhkan HTTPS. Printer Bluetooth Classic/SPP yang tidak kompatibel Web Bluetooth tetap dapat memakai Browser Print/driver OS.</li>
+      </ul>
+    )
+  },
+  {
+    id: "saas",
+    label: "Multi Outlet & SaaS",
+    body: (
+      <ul>
+        <li><b>Owner &amp; SaaS</b> khusus Pemilik/Admin: buat outlet, lihat ringkasan lintas outlet, status subscription, Cloud Sync, dan download backup JSON.</li>
+        <li>Pilih outlet aktif dari dropdown header. Data menu, meja, pengaturan, transaksi, inventory, staff, laporan, dan analytics mengikuti outlet aktif. Manager/staff dikunci ke outlet session mereka oleh backend.</li>
+        <li><b>Analytics</b> menyediakan pilihan 7/30/90 hari untuk melihat jam ramai, channel, performa staff, kategori, unique customer, dan repeat customer.</li>
+        <li>Instalasi mendapat trial 14 hari. Setelah habis, transaksi/perubahan data diblokir tetapi data, backup, dan aktivasi lisensi tetap dapat diakses.</li>
+        <li>Kode lisensi <b>KSP1</b> terikat ke <b>Installation ID</b> yang tampil di kartu Subscription, sehingga kode tidak dapat dipindahkan ke instalasi lain.</li>
+        <li>Backup JSON memiliki checksum SHA-256. Simpan file backup terpisah dari Spreadsheet utama.</li>
+      </ul>
+    )
+  },
+  {
     id: "laporan",
     label: "Laporan & Pengaturan",
     body: (
       <ul>
         <li>
           <b>Laporan</b>: pilih rentang Hari Ini / 7 Hari / 30 Hari. Tersedia order, gross sales, diskon,
-          pajak, service, net sales, rata-rata check, payment mix per metode, tren harian, dan menu
-          terlaris. Tombol <b>CSV</b> mengunduh rekap untuk Excel/Spreadsheet.
+          pajak, service, net sales, <b>COGS, Gross Profit, Gross Margin</b>, rata-rata check, payment mix,
+          tren harian, dan menu terlaris. Tombol <b>CSV</b> mengunduh rekap untuk Excel/Spreadsheet.
         </li>
         <li>
           <b>Dashboard</b> merangkum hal yang sama untuk hari ini + alert stok kritis.

@@ -1,20 +1,24 @@
 /**
  * Session login berbasis token bertanda tangan (stateless).
  *
- * Modul ini HARUS aman dijalankan di Edge runtime karena diimpor oleh middleware.ts,
- * jadi hanya memakai Web Crypto (crypto.subtle) — bukan node:crypto — dan tidak
- * memakai Buffer. Verifikasi password memakai node:crypto dan tinggal di lib/password.ts
- * yang hanya diimpor oleh route handler Node.
+ * Modul ini HARUS aman dijalankan di Edge runtime karena diimpor middleware.ts.
+ * Hanya Web Crypto yang dipakai di sini; verifikasi password admin tetap berada
+ * di route Node.js terpisah.
  */
 
 export const SESSION_COOKIE = "kastriva_session";
 
-export type SessionRole = "admin" | "cashier";
+export const SESSION_ROLES = ["admin", "manager", "cashier", "kitchen", "waiter", "barista", "staff"] as const;
+export type SessionRole = (typeof SESSION_ROLES)[number];
 
 export type SessionPayload = {
-  /** username pemilik session */
+  /** admin username atau id staff */
   sub: string;
   role: SessionRole;
+  /** nama yang aman ditampilkan di UI */
+  name?: string;
+  /** store staff, bila tersedia */
+  storeId?: string;
   /** issued at, epoch detik */
   iat: number;
   /** expires at, epoch detik */
@@ -24,7 +28,6 @@ export type SessionPayload = {
 const MIN_SECRET_LENGTH = 32;
 const DEFAULT_TTL_HOURS = 8;
 
-/** Secret penanda tangan session. Kosong = fitur login dianggap belum dikonfigurasi. */
 export function getAuthSecret(): string {
   const secret = (process.env.AUTH_SECRET || "").trim();
   return secret.length >= MIN_SECRET_LENGTH ? secret : "";
@@ -64,16 +67,22 @@ async function importKey(secret: string) {
   );
 }
 
-/** Membuat token `payload.signature` (base64url) yang ditandatangani HMAC-SHA256. */
+function normalizeRole(value: unknown): SessionRole {
+  const role = String(value || "").toLowerCase();
+  return (SESSION_ROLES as readonly string[]).includes(role) ? (role as SessionRole) : "staff";
+}
+
 export async function signSession(
-  input: {sub: string; role?: SessionRole; ttlSeconds?: number},
+  input: {sub: string; role?: SessionRole; name?: string; storeId?: string; ttlSeconds?: number},
   secret = getAuthSecret()
 ): Promise<string> {
   if (!secret) throw new Error("AUTH_SECRET belum dikonfigurasi");
   const now = Math.floor(Date.now() / 1000);
   const payload: SessionPayload = {
     sub: String(input.sub).slice(0, 64),
-    role: input.role === "cashier" ? "cashier" : "admin",
+    role: normalizeRole(input.role || "admin"),
+    name: input.name ? String(input.name).slice(0, 80) : undefined,
+    storeId: input.storeId ? String(input.storeId).slice(0, 64) : undefined,
     iat: now,
     exp: now + (input.ttlSeconds ?? getSessionTtlSeconds())
   };
@@ -84,11 +93,6 @@ export async function signSession(
   return `${body}.${bytesToBase64Url(new Uint8Array(signature))}`;
 }
 
-/**
- * Memverifikasi token dan masa berlakunya.
- * Mengembalikan null untuk token cacat, tanda tangan salah, atau sudah kedaluwarsa —
- * pemanggil tidak perlu membedakan penyebabnya.
- */
 export async function verifySession(
   token: string | undefined | null,
   secret = getAuthSecret()
@@ -119,7 +123,9 @@ export async function verifySession(
 
     return {
       sub: payload.sub,
-      role: payload.role === "cashier" ? "cashier" : "admin",
+      role: normalizeRole(payload.role),
+      name: typeof payload.name === "string" ? payload.name.slice(0, 80) : undefined,
+      storeId: typeof payload.storeId === "string" ? payload.storeId.slice(0, 64) : undefined,
       iat: payload.iat,
       exp: payload.exp
     };
@@ -128,10 +134,6 @@ export async function verifySession(
   }
 }
 
-/**
- * Menentukan apakah koneksi memakai HTTPS.
- * Dibaca dari x-forwarded-proto (di belakang proxy/Vercel) lalu dari URL permintaan.
- */
 export function isSecureRequest(req: Request): boolean {
   const forwarded = (req.headers.get("x-forwarded-proto") || "").split(",")[0].trim().toLowerCase();
   if (forwarded) return forwarded === "https";
@@ -142,14 +144,6 @@ export function isSecureRequest(req: Request): boolean {
   }
 }
 
-/**
- * Opsi cookie session.
- *
- * Flag Secure mengikuti protokol permintaan, BUKAN NODE_ENV: instalasi self-host
- * di jaringan lokal restoran sering berjalan di HTTP biasa, dan cookie Secure di sana
- * akan diterbitkan tapi tidak pernah dikirim balik sehingga login selalu gagal.
- * Paksa lewat AUTH_COOKIE_SECURE=true bila ingin mewajibkan HTTPS.
- */
 export function sessionCookieOptions(req?: Request, maxAgeSeconds = getSessionTtlSeconds()) {
   const override = (process.env.AUTH_COOKIE_SECURE || "").trim().toLowerCase();
   const secure =
@@ -165,17 +159,12 @@ export function sessionCookieOptions(req?: Request, maxAgeSeconds = getSessionTt
   };
 }
 
-/**
- * Membersihkan parameter ?next= agar tidak bisa dipakai untuk open redirect.
- * Hanya path internal yang diterima: harus mulai "/" dan bukan "//" atau "/\".
- */
 export function safeNextPath(value: string | null | undefined, fallback = "/"): string {
   if (!value) return fallback;
   let path = String(value);
   if (!path.startsWith("/")) return fallback;
   if (path.startsWith("//") || path.startsWith("/\\")) return fallback;
   if (/[\u0000-\u001f\u007f]/.test(path)) return fallback;
-  // Blokir bentuk terenkode yang setelah didekode menjadi absolut atau protocol-relative.
   try {
     const decoded = decodeURIComponent(path);
     if (decoded.startsWith("//") || decoded.startsWith("/\\") || /^[a-z][a-z0-9+.-]*:/i.test(decoded)) {
@@ -188,11 +177,6 @@ export function safeNextPath(value: string | null | undefined, fallback = "/"): 
   return path;
 }
 
-/**
- * Pemeriksaan CSRF ringan: menolak permintaan lintas situs yang mengandalkan cookie.
- * Origin absen (curl, server-to-server) tidak bisa dieksploitasi lewat browser,
- * jadi diperlakukan sebagai same-origin.
- */
 export function isSameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
   if (!origin) return true;

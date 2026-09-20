@@ -17,6 +17,9 @@ export async function GET(req: Request) {
         configured: isAuthConfigured(),
         authenticated: Boolean(session),
         username: session?.sub ?? null,
+        name: session?.name ?? session?.sub ?? null,
+        staffId: session && session.role !== "admin" ? session.sub : null,
+        storeId: session?.storeId ?? null,
         role: session?.role ?? null,
         expiresAt: session ? new Date(session.exp * 1000).toISOString() : null
       }

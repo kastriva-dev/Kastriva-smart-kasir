@@ -17,6 +17,7 @@ export type GasMenu = {
   active?: boolean;
   emoji?: string;
   imageUrl?: string;
+  barcode?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -29,6 +30,7 @@ export type GasOrderItem = {
   price: number;
   qty: number;
   note?: string;
+  cost?: number;
 };
 
 export type GasOrder = {
@@ -51,7 +53,33 @@ export type GasOrder = {
   paymentMethod?: string;
   paidAmount?: number | "";
   changeAmount?: number | "";
+  clientOrderId?: string;
+  cancelReason?: string;
+  cancelledAt?: string;
+  refundedAmount?: number | "";
+  refundReason?: string;
+  refundedAt?: string;
+  staffId?: string;
+  staffName?: string;
+  shiftId?: string;
+  registerId?: string;
+  manualDiscount?: number | "";
+  discountType?: string;
+  discountValue?: number | "";
+  promoId?: string;
+  promoName?: string;
+  promoDiscount?: number | "";
+  voucherCode?: string;
+  voucherDiscount?: number | "";
+  memberId?: string;
+  memberCode?: string;
+  pointsRedeemed?: number | "";
+  pointsDiscount?: number | "";
+  pointsEarned?: number | "";
+  paymentSummary?: string;
+  splitFromOrderId?: string;
   items?: GasOrderItem[];
+  payments?: GasPayment[];
 };
 
 export type GasTable = {
@@ -74,6 +102,29 @@ export type GasCustomer = {
   totalSpend: number;
   createdAt: string;
   updatedAt?: string;
+  memberCode?: string;
+  points?: number;
+  lifetimePoints?: number;
+  lastVisitAt?: string;
+};
+
+export type GasPromotion = {
+  id: string; storeId: string; name: string; type: "PERCENT" | "FIXED" | string; value: number;
+  minSpend: number; maxDiscount: number; startAt?: string; endAt?: string; active: boolean; createdAt?: string; updatedAt?: string;
+};
+
+export type GasVoucher = {
+  id: string; storeId: string; code: string; name: string; type: "PERCENT" | "FIXED" | string; value: number;
+  minSpend: number; maxDiscount: number; usageLimit: number; usedCount: number; startAt?: string; endAt?: string; active: boolean; createdAt?: string; updatedAt?: string;
+};
+
+export type GasPayment = {
+  id: string; storeId: string; orderId: string; method: PaymentMethod; amount: number; receivedAmount: number; changeAmount: number; reference?: string;
+  staffId?: string; staffName?: string; shiftId?: string; registerId?: string; createdAt: string;
+};
+
+export type GasLoyaltyTransaction = {
+  id: string; storeId: string; customerId: string; memberCode: string; orderId: string; type: string; points: number; balanceAfter: number; note?: string; createdAt: string;
 };
 
 export type GasInventory = {
@@ -85,6 +136,77 @@ export type GasInventory = {
   parLevel: number;
   cost: number;
   updatedAt: string;
+};
+
+export type GasSupplier = {
+  id: string;
+  storeId: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  note?: string;
+  active?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type GasPurchaseItem = {
+  id: string;
+  purchaseId: string;
+  inventoryId: string;
+  inventoryName: string;
+  qty: number;
+  unitCost: number;
+  total: number;
+};
+
+export type GasPurchase = {
+  id: string;
+  storeId: string;
+  supplierId: string;
+  supplierName: string;
+  invoiceNo?: string;
+  status: "DRAFT" | "RECEIVED" | "CANCELLED" | string;
+  total: number;
+  note?: string;
+  createdAt: string;
+  receivedAt?: string;
+  receivedBy?: string;
+  cancelledAt?: string;
+  items?: GasPurchaseItem[];
+};
+
+export type GasRecipe = {
+  id: string;
+  storeId: string;
+  menuItemId: string;
+  menuName?: string;
+  inventoryId: string;
+  inventoryName?: string;
+  qty: number;
+  unit: string;
+  unitCost?: number;
+  lineCost?: number;
+};
+
+export type GasStockMovement = {
+  id: string;
+  storeId: string;
+  inventoryId: string;
+  inventoryName: string;
+  type: string;
+  qty: number;
+  beforeStock: number;
+  afterStock: number;
+  unitCost: number;
+  totalCost: number;
+  referenceType?: string;
+  referenceId?: string;
+  note?: string;
+  staffId?: string;
+  staffName?: string;
+  createdAt: string;
 };
 
 export type GasReservation = {
@@ -104,10 +226,41 @@ export type GasStaff = {
   storeId: string;
   name: string;
   role: string;
-  /** Hanya ada di payload tulis; getStaff menyembunyikannya dari pembacaan. */
-  pinHash?: string;
+  /** Backend tidak pernah mengirim hash PIN; hanya indikator boolean. */
+  hasPin?: boolean;
   active: boolean;
   createdAt: string;
+};
+
+
+export type GasShift = {
+  id: string;
+  storeId: string;
+  staffId: string;
+  staffName: string;
+  role: string;
+  registerId: string;
+  status: "OPEN" | "CLOSED" | string;
+  openingCash: number;
+  openedAt: string;
+  closingCash?: number | "";
+  expectedCash?: number | "";
+  cashSales?: number | "";
+  cashRefunds?: number | "";
+  difference?: number | "";
+  closedAt?: string;
+  note?: string;
+};
+
+export type SessionInfo = {
+  configured: boolean;
+  authenticated: boolean;
+  username: string | null;
+  name: string | null;
+  staffId: string | null;
+  storeId: string | null;
+  role: "admin" | "manager" | "cashier" | "kitchen" | "waiter" | "barista" | "staff" | null;
+  expiresAt: string | null;
 };
 
 export type GasCategory = {
@@ -125,24 +278,61 @@ export type GasSettings = {
   address: string;
   taxRate: number;
   serviceRate: number;
+  loyaltyEnabled?: boolean;
+  loyaltySpendPerPoint?: number;
+  loyaltyPointValue?: number;
+  maxRedeemPercent?: number;
 };
 
 export type GasReport = {
   range: "today" | "7d" | "30d";
   orderCount: number;
+  totalOrders?: number;
   grossSales: number;
   discount: number;
   tax: number;
   service: number;
   netSales: number;
+  outstandingSales?: number;
+  refundedSales?: number;
+  refundCount?: number;
   avgCheck: number;
+  cogs?: number;
+  grossProfit?: number;
+  grossMargin?: number;
   paymentMix: Record<string, number>;
   statusCount: Record<string, number>;
   topItems: {name: string; qty: number; revenue: number}[];
   series: {date: string; total: number}[];
 };
 
-export const ORDER_STATUSES = ["NEW", "CONFIRMED", "COOKING", "READY", "SERVED", "PAID", "CANCELLED"] as const;
+export type GasStore = {
+  id: string; name: string; slug: string; phone?: string; address?: string; taxRate?: number; serviceRate?: number; active?: boolean; createdAt?: string;
+};
+
+export type GasSubscription = {
+  id: string; installationId: string; plan: string; status: "TRIAL" | "ACTIVE" | "EXPIRED" | string; trialStart: string; trialEnd: string; activeUntil?: string; maxOutlets: number; licenseId?: string; updatedAt?: string; daysRemaining: number; isActive: boolean;
+};
+
+export type GasOwnerDashboard = {
+  range: string; generatedAt: string; totals: {netSales:number;cogs:number;grossProfit:number;grossMargin:number;orders:number;outstanding:number;refunds:number};
+  outlets: {storeId:string;name:string;slug:string;netSales:number;orders:number;avgCheck:number;cogs:number;grossProfit:number;grossMargin:number;outstanding:number;refunds:number;lowStock:number}[];
+};
+
+export type GasAdvancedAnalytics = {
+  storeId:string; days:number; paidOrders:number; uniqueCustomers:number; repeatCustomers:number; repeatRate:number; generatedAt:string;
+  hourly:{label:string;value:number}[]; weekday:{label:string;value:number}[]; channel:{label:string;value:number}[]; staff:{label:string;value:number}[]; category:{label:string;value:number}[];
+};
+
+export type GasSyncState = {
+  storeId:string; serverTime:string; lastChangeAt:string; mode:string; counts:{orders:number;menu:number;customers:number;inventory:number};
+};
+
+export type GasBackup = {
+  format:string; version:number; exportedAt:string; checksum:string; store:GasStore; data:Record<string, unknown[]>;
+};
+
+export const ORDER_STATUSES = ["NEW", "CONFIRMED", "COOKING", "READY", "SERVED", "PAID", "CANCELLED", "REFUNDED"] as const;
 export const PAYMENT_METHODS = ["CASH", "QRIS", "DEBIT", "EWALLET", "TRANSFER"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
@@ -186,18 +376,20 @@ export async function gasCall<T = unknown>(action: string, payload: Record<strin
 }
 
 /** Menu publik untuk POS dan halaman customer (GET, bisa dicache SW). */
-export async function fetchPublicMenu(): Promise<GasMenu[]> {
+export async function fetchPublicMenu(storeId = ""): Promise<GasMenu[]> {
   let res: Response;
   try {
-    res = await fetch("/api/orders?action=getMenu", {cache: "no-store"});
+    const qs = new URLSearchParams({action: "getMenu"});
+    if (storeId) qs.set("storeId", storeId);
+    res = await fetch(`/api/orders?${qs.toString()}`, {cache: "no-store"});
   } catch {
     throw new ApiError("Tidak dapat menghubungi server — periksa koneksi", 0);
   }
   return parse<GasMenu[]>(res);
 }
 
-export async function fetchPublicSettings(): Promise<GasSettings> {
-  return gasCall<GasSettings>("getSettings");
+export async function fetchPublicSettings(storeId = ""): Promise<GasSettings> {
+  return gasCall<GasSettings>("getSettings", storeId ? {storeId} : {});
 }
 
 /** Tarif GAS menerima 0.11 maupun 11 sebagai "11%". Normalisasi ke desimal. */
@@ -251,6 +443,14 @@ export function saveHeldOrders(list: HeldOrder[]) {
   } catch {
     /* penyimpanan tidak tersedia: abaikan */
   }
+}
+
+export function newClientOrderId(prefix = "ORD"): string {
+  const safePrefix = prefix.replace(/[^A-Z0-9_-]/gi, "").slice(0, 12) || "ORD";
+  const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${safePrefix}-${id}`.slice(0, 96);
 }
 
 export function formatClock(iso: string): string {

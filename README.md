@@ -33,9 +33,11 @@ Endpoint auth:
 
 | Endpoint | Metode | Fungsi |
 | --- | --- | --- |
-| `/api/auth/login` | POST | verifikasi username + password, terbitkan cookie session |
+| `/api/auth/login` | POST | login Pemilik/Admin dengan username + password |
+| `/api/auth/staff` | GET | daftar staff aktif yang memiliki PIN (tanpa hash PIN) |
+| `/api/auth/staff` | POST | verifikasi staff + PIN dan terbitkan session role-based |
 | `/api/auth/logout` | POST | hapus cookie session |
-| `/api/auth/session` | GET | status session untuk kebutuhan UI |
+| `/api/auth/session` | GET | identitas session, role, staffId, storeId, dan masa berlaku |
 
 Password disimpan sebagai hash scrypt, bukan teks polos. Login dibatasi 10 percobaan
 per IP setiap 15 menit, respons gagal ditahan minimal 400 ms, dan permintaan dengan
@@ -43,37 +45,177 @@ per IP setiap 15 menit, respons gagal ditahan minimal 400 ms, dan permintaan den
 
 ### Pembagian akses API
 
-| Kelompok | Action | Kredensial |
-| --- | --- | --- |
-| Publik | `health`, `getMenu`, `getTables`, `getSettings`, `createOrder` | tidak perlu |
-| Admin | `getOrders`, `getOrder`, `updateOrderStatus`, `payOrder`, `getCustomers`, `getInventory`, `getReservations`, `getStaff`, `getCategories`, `getReport`, `saveMenu`, `saveCategory`, `saveTable`, `saveInventory`, `saveReservation`, `saveCustomer`, `saveSettings`, `deleteData`, `deleteMenu`, `audit` | header `x-admin-token` / `Authorization: Bearer <ADMIN_API_TOKEN>` **atau** cookie session login |
+Permission diperiksa **di server**, bukan hanya dengan menyembunyikan menu UI.
 
-UI admin memakai cookie session — `ADMIN_API_TOKEN` hanya untuk integrasi non-browser
-(skor, dashboard pihak ketiga, skrip). Action di luar daftar ditolak 400 sebelum menyentuh
-Apps Script.
+| Role | Akses utama |
+| --- | --- |
+| **Admin** | seluruh fitur, pengaturan, staff, refund, laporan, inventory |
+| **Manager** | seluruh fitur operasional termasuk refund, staff, laporan, inventory |
+| **Cashier/Kasir** | POS, pembayaran, pesanan, pelanggan, reservasi, shift |
+| **Kitchen / Barista** | pesanan dapur (`CONFIRMED → COOKING → READY`) dan shift |
+| **Waiter** | pesanan, meja, reservasi, pelanggan, shift; tidak dapat refund/pembayaran |
+| **Staff** | pesanan dasar dan shift |
+
+Action publik tetap terbatas pada `health`, `getMenu`, `getTables`, `getSettings`, dan `createOrder`.
+Request publik yang mencoba menyamar sebagai channel POS dipaksa kembali menjadi channel `QR`.
+`ADMIN_API_TOKEN` tetap tersedia untuk integrasi server-to-server dan selalu dianggap role Admin.
 
 Harga tidak pernah dipercaya dari client: `createOrder` hanya menerima `menuItemId` dan `qty`,
 lalu Apps Script menghitung ulang subtotal, pajak, service, dan stok dari sheet. Diskon hanya
 dihormati bila proxy server menandai payload `_admin` (request dari kasir yang sedang login);
 pelanggan QR selalu diskon 0. Stok menu yang terlacak otomatis berkurang dan order dengan stok
-kurang ditolak.
+kurang ditolak. Setiap order dari UI membawa `clientOrderId` idempotent agar retry jaringan tidak
+membuat transaksi ganda atau mengurangi stok dua kali.
 
 ### Fitur kasir (halaman internal)
 
-- **POS**: grid menu real-time dengan indikator stok, filter kategori, pencarian, diskon nominal,
-  pilihan meja/takeaway, pesanan ditahan (hold/recall di localStorage).
-- **Pembayaran**: Tunai (hitung kembalian + tombol nominal cepat), QRIS, Debit/Kartu, E-Wallet,
-  Transfer — dicatat via action `payOrder`, status otomatis `PAID`.
-- **Struk**: modal struk siap cetak (CSS `@media print`), data pembayaran & kembalian ikut.
-- **Pesanan**: antrian omnichannel dengan filter status, pencarian, rincian item, ubah status,
-  dan pembayaran lanjutan untuk order yang belum lunas.
-- **Dapur (KDS)**: 4 kolom status, umur tiket, tiket >15 menit disorot merah, tombol lanjut status.
+- **POS**: grid menu real-time dengan indikator stok, filter kategori, pencarian, diskon nominal/% ,
+  promo, voucher, member/loyalty point, pilihan meja/takeaway, dan pesanan ditahan (hold/recall di localStorage).
+- **Pembayaran**: Tunai, QRIS, Debit/Kartu, E-Wallet, Transfer, serta **Split Payment** sampai 5 metode.
+  Setiap alokasi disimpan sebagai baris tersendiri di sheet `Payments`, sehingga laporan payment mix dan
+  rekonsiliasi shift tetap akurat. Pembayaran kedua untuk order yang sama ditolak backend.
+- **Struk**: modal struk siap cetak, Browser Print fallback, dan direct ESC/POS untuk printer USB/serial atau BLE yang kompatibel.
+- **Pesanan**: antrian omnichannel dengan filter status, pencarian, rincian item, state machine
+  `NEW → CONFIRMED → COOKING → READY → SERVED`; `PAID` hanya lewat pembayaran. Cancel/void
+  wajib alasan dan mengembalikan stok. Order PAID dapat di-refund penuh dengan alasan dan opsi restock.
+- **Dapur (KDS)**: 4 kolom status, umur tiket, tiket >15 menit disorot merah, tombol lanjut status, serta kitchen ticket manual/otomatis ke printer yang dikonfigurasi.
 - **Meja**: status okupansi otomatis dari pesanan aktif, QR per meja, tambah/kosongkan meja.
-- **Menu/Inventory/Reservasi**: CRUD langsung ke sheet via `saveMenu`, `saveCategory`,
-  `saveInventory`, `saveReservation`, `deleteData` (whitelist sheet).
-- **Laporan**: rekap hari ini/7/30 hari dari action `getReport` — net sales, pajak, service,
-  payment mix, menu terlaris, tren harian, export CSV.
+- **Menu/Inventory/Reservasi**: CRUD master data langsung ke backend. Menu mendukung **barcode/SKU unik** dan pengisian lewat kamera. **Inventory Pro** menambahkan Stock Movement Ledger, supplier, purchase/restock, stock opname, waste/adjustment, dan Recipe/BOM yang mengurangi bahan otomatis saat penjualan.
+- **Laporan**: rekap hari ini/7/30 hari dari action `getReport` — penjualan hanya dari transaksi
+  `PAID`, outstanding dipisahkan, refund dilaporkan terpisah, plus pajak, service, **COGS, Gross Profit, Gross Margin**, payment mix, menu terlaris, tren harian, dan export CSV.
 - **Pengaturan**: nama toko, pajak, service charge tersimpan ke sheet Stores via `saveSettings`.
+
+
+## Transaction Safety — Stage 1
+
+Versi ini sudah menerapkan pengamanan transaksi berikut:
+
+- autentikasi action admin selalu di-`await` sebelum request diteruskan ke Apps Script;
+- session browser admin dapat dipakai tanpa harus mengekspos `ADMIN_API_TOKEN` ke client;
+- state machine mencegah loncat/mundur status dan mencegah `PAID` lewat dropdown;
+- double payment ditolak;
+- `clientOrderId` membuat create-order idempotent saat retry/offline queue;
+- `CANCELLED` wajib alasan dan mengembalikan stok tepat satu kali;
+- `REFUNDED` hanya dari order `PAID`, wajib alasan, dengan opsi mengembalikan stok;
+- laporan penjualan hanya menghitung order `PAID`; order aktif masuk `outstandingSales`, refund
+  masuk `refundedSales`;
+- schema Orders akan menambahkan kolom Stage 1 secara aman saat mutasi order pertama, namun
+  setelah mengganti `gas/Code.gs` tetap disarankan menjalankan `setupDatabase()` sekali.
+
+
+## Staff & Shift — Stage 2
+
+Stage 2 menambahkan identitas operator dan rekonsiliasi kas yang benar-benar terhubung ke transaksi:
+
+- login **Staff / Kasir** terpisah dari login Pemilik/Admin;
+- daftar login hanya menampilkan staff aktif yang sudah memiliki PIN;
+- PIN diverifikasi di backend dan hash PIN tidak pernah dikirim ke browser;
+- session menyimpan `staffId`, nama, role, dan `storeId`;
+- permission API diperiksa berdasarkan role, jadi pembatasan tetap berlaku walaupun request dibuat lewat DevTools;
+- halaman **Shift** untuk buka/tutup shift dengan `registerId` dan modal awal;
+- satu staff hanya boleh memiliki satu shift `OPEN` pada satu waktu;
+- transaksi POS dan pembayaran oleh staff membutuhkan shift aktif;
+- order menyimpan `staffId`, `staffName`, `shiftId`, dan `registerId`;
+- penutupan shift menghitung `expectedCash = openingCash + cashSales - cashRefunds`;
+- uang fisik (`closingCash`) dibandingkan dengan expected cash dan disimpan sebagai `difference`;
+- audit log transaksi dan shift memakai identitas staff sebenarnya;
+- role Kitchen/Barista tidak dapat refund/bayar, role Waiter tidak dapat refund/bayar, dan Refund hanya Manager/Admin.
+
+Setelah mengganti `gas/Code.gs`, jalankan `setupDatabase()` sekali. Fungsi ini akan membuat sheet
+`Shifts` dan menambahkan kolom Stage 2 ke `Orders` tanpa menghapus data lama.
+
+## Inventory Pro — Stage 3
+
+Stage 3 menambahkan inventory yang dapat diaudit dan terhubung langsung ke transaksi:
+
+- **Stock Movement Ledger** append-only untuk `INITIAL`, `PURCHASE`, `SALE`, `RETURN`, `OPNAME`, `WASTE`, dan `ADJUSTMENT`;
+- **Supplier** sebagai master pemasok;
+- **Purchase** memakai alur `DRAFT → RECEIVED` atau `DRAFT → CANCELLED`; DRAFT belum mengubah stok;
+- saat purchase diterima, stok bertambah dan `cost` bahan dihitung ulang dengan **weighted-average cost**;
+- **Stock Opname** menetapkan stok fisik, **Waste** mengurangi stok dengan alasan, dan **Adjustment** menerima koreksi +/-;
+- **Recipe/BOM** menghubungkan menu ke satu atau lebih bahan beserta qty per porsi;
+- order otomatis mengecek kecukupan stok bahan sebelum ditulis, lalu mengurangi bahan berdasarkan BOM;
+- cancel atau refund dengan restock mengembalikan bahan berdasarkan movement SALE asli sehingga tetap benar walau resep kemudian berubah;
+- `OrderItems.cost` menyimpan **cost snapshot** pada saat order dibuat; laporan memakai snapshot ini untuk COGS historis;
+- laporan menampilkan **COGS, Gross Profit, dan Gross Margin**;
+- perubahan average cost bahan otomatis menghitung ulang `Menu.cost` untuk menu yang memakai bahan tersebut.
+
+Setelah upgrade, jalankan `setupDatabase()` sekali. Stage 3 menambahkan sheet `Suppliers`, `Purchases`,
+`PurchaseItems`, `Recipes`, `StockMovements` dan kolom `cost` pada `OrderItems` tanpa menghapus data lama.
+
+## Hardware POS — Stage 4
+
+Stage 4 menambahkan integrasi perangkat kasir tanpa memindahkan credential backend ke browser:
+
+- field **barcode/SKU** pada Menu, dinormalisasi dan divalidasi unik per store di Apps Script;
+- scanner USB/Bluetooth yang bekerja sebagai **keyboard-wedge** dapat menambahkan item langsung ke keranjang;
+- scanner kamera HP menggunakan `BarcodeDetector` bila browser mendukung, dengan fallback scanner USB/manual;
+- halaman **Perangkat** menyimpan konfigurasi printer/scanner **lokal per perangkat** (`localStorage`), sehingga PC kasir dan layar dapur dapat memiliki konfigurasi berbeda;
+- direct printing ESC/POS melalui **Web Serial** untuk printer USB/serial yang didukung browser;
+- direct printing melalui **Web Bluetooth Low Energy (GATT)** untuk printer BLE dengan service/characteristic UUID yang sesuai;
+- **Browser Print** tetap tersedia sebagai fallback universal;
+- receipt printer mendukung lebar 58/80 mm, auto-cut jika printer mendukung, dan auto-print setelah pembayaran;
+- kitchen printer dapat terpisah atau memakai printer struk yang sama; QR order dapat auto-print sekali saat KDS sedang aktif;
+- cash drawer dapat dibuka otomatis pada pembayaran tunai melalui perintah pulse ESC/POS ke port drawer pada printer;
+- ID kitchen ticket yang sudah dicetak disimpan lokal agar polling KDS tidak mencetak order yang sama berulang.
+
+Catatan kompatibilitas: Web Serial/Web Bluetooth/kamera memerlukan **HTTPS** (localhost juga dianggap secure context).
+Banyak printer Bluetooth murah memakai **Bluetooth Classic/SPP**, yang tidak dapat diakses langsung oleh Web Bluetooth;
+untuk perangkat tersebut gunakan driver OS + Browser Print, atau gunakan jalur serial/COM jika printer terekspos sebagai serial.
+Koneksi langsung printer biasanya perlu dihubungkan kembali setelah browser/perangkat direstart, walaupun konfigurasinya tetap tersimpan.
+
+Setelah mengganti `gas/Code.gs`, jalankan `setupDatabase()` sekali agar kolom `barcode` ditambahkan ke sheet `Menu` tanpa menghapus data lama.
+
+
+### Promo, Voucher, Membership & Split Bill (Stage 5)
+
+- Promo dan voucher dihitung ulang di Apps Script; nilai total dari browser tidak dipercaya. Promo mendukung
+  persen/nominal, minimum belanja, batas diskon, periode aktif, dan status aktif/nonaktif.
+- Voucher mempunyai kode unik per store, periode berlaku, minimum belanja, maksimum diskon, serta usage limit.
+  Kuota voucher dikonsumsi saat order dibuat dan dilepas kembali bila order dibatalkan sebelum pembayaran.
+- Customer dengan nomor telepon dapat menjadi member otomatis. Loyalty dapat dikonfigurasi dari menu
+  **Promo & Loyalty**: nominal belanja per poin, nilai rupiah per poin, dan maksimum persen tagihan yang dapat diredeem.
+- Redeem poin direservasi saat order dibuat, poin baru diberikan hanya setelah order `PAID`, dan refund membalik
+  poin hasil transaksi sekaligus mengembalikan poin yang diredeem. Semua mutasi masuk `LoyaltyTransactions`.
+- **Split Bill** memindahkan sebagian item/qty ke order baru tanpa mengurangi stok kedua kali. Untuk menjaga
+  pembagian diskon tetap deterministik, split bill dilakukan **sebelum** promo/voucher/diskon/redeem poin diterapkan.
+- Snapshot `OrderIngredientUsage` ikut dipisah per item, sehingga cancel/refund setelah split mengembalikan bahan
+  persis sesuai porsi masing-masing bill walaupun resep berubah setelah transaksi.
+
+
+## Multi Outlet, Owner Dashboard & SaaS — Stage 6
+
+Stage 6 mengubah instalasi POS menjadi fondasi SaaS multi-outlet yang tetap memakai Google Sheets sebagai cloud source of truth:
+
+- **isolasi outlet server-side**: session staff/manager selalu dipaksa ke `storeId` miliknya; mengubah payload lewat DevTools tidak membuka data outlet lain;
+- Owner/Admin dapat memilih outlet aktif dari header dan melihat **Owner Dashboard** agregat lintas outlet;
+- laporan Stage 1–5 sekarang selalu difilter `storeId`, menutup bug lama yang dapat mencampur omzet antar-outlet;
+- menu publik, setting, tabel, QR ordering, inventory, staff, promo, voucher, shift, laporan, dan transaksi mengikuti outlet aktif;
+- **Advanced Analytics** per outlet: paid orders, unique/repeat customer, repeat rate, penjualan per jam, hari, channel, staff, dan kategori;
+- **Cloud Sync Status** menampilkan waktu server, perubahan terakhir, dan jumlah data utama; Google Sheets tetap menjadi source of truth cloud antar-perangkat;
+- **Backup JSON** per outlet dapat diunduh oleh Owner/Admin, lengkap dengan checksum SHA-256; backup memuat data master/transaksi outlet dan child rows terkait;
+- **14-day trial** dibuat otomatis per instalasi ketika `setupDatabase()` pertama kali menyiapkan sheet Subscription;
+- setelah trial berakhir, operasi tulis/transaksi diblokir sampai lisensi aktif, sementara data tetap dapat dibaca dan backup/lisensi masih dapat diakses;
+- paket lisensi `STARTER`, `PRO`, dan `BUSINESS` membawa masa aktif + batas outlet;
+- kode lisensi `KSP1` ditandatangani HMAC-SHA256 di server dan **terikat ke Installation ID**, sehingga tidak dapat dipakai di instalasi lain;
+- `LICENSE_SIGNING_SECRET` hanya boleh berada di server/mesin penerbit lisensi, tidak pernah memakai prefix `NEXT_PUBLIC_`.
+
+Stage 6 menambahkan sheet `Subscriptions`; total schema menjadi **24 sheet**. Upgrade tetap kompatibel dengan data lama karena `setupDatabase()` hanya menambahkan sheet/kolom yang belum ada.
+
+### Membuat kode lisensi
+
+1. Pelanggan membuka **Owner & SaaS** lalu mengirimkan `Installation ID`.
+2. Di mesin penerbit lisensi, set `LICENSE_SIGNING_SECRET` yang sama dengan environment Vercel instalasi tersebut.
+3. Buat kode, misalnya paket PRO 365 hari, maksimum 5 outlet:
+
+```powershell
+$env:LICENSE_SIGNING_SECRET="secret-acak-minimal-32-karakter"
+npm run license:make -- PRO 365 5 CUSTOMER-001 INST-XXXXXXXXXXXXXX
+```
+
+4. Salin output `KSP1....` ke pelanggan. Pelanggan memasukkannya pada **Owner & SaaS → Subscription → Aktifkan Lisensi**.
+
+> `LICENSE_SIGNING_SECRET` adalah secret penerbit lisensi. Jangan taruh di source code, Google Sheet, browser, atau variable `NEXT_PUBLIC_*`.
 
 ## Menyiapkan login
 
@@ -116,6 +258,7 @@ GAS_WEB_APP_URL=https://script.google.com/macros/s/DEPLOYMENT_ID/exec
 GAS_API_KEY=sama-dengan-script-property
 ADMIN_API_TOKEN=token-acak-panjang
 GAS_TIMEOUT_MS=15000
+LICENSE_SIGNING_SECRET=secret-lisensi-acak-minimal-32-karakter
 NEXT_PUBLIC_STORE_NAME=Kastriva Smart Kasir
 NEXT_PUBLIC_STORE_ID=kastriva
 NEXT_PUBLIC_CASHIER_WHATSAPP=628xxxxxxxxxx
@@ -142,13 +285,14 @@ npm run verify     # typecheck + lint + test + build
 
 `npm run test` menjalankan tes Node bawaan: autentikasi (`tests/auth.test.mjs`), validasi input
 route API (`tests/api-validation.test.mjs`), dan logika Apps Script lewat stub Google Sheets
-(`tests/gas-backend.test.mjs`), jadi backend bisa diuji tanpa Google.
-Butuh Node ≥ 22.18 (import `.ts` langsung tanpa build step).
+(`tests/gas-backend.test.mjs`), hardware (`tests/hardware.test.mjs`), dan lisensi (`tests/license.test.mjs`), jadi backend dapat diuji tanpa Google.
+Test script mengaktifkan `--experimental-strip-types`; Node ≥ 22.18 tetap direkomendasikan untuk environment development/production sesuai `package.json`.
 
 ## Sheet yang dibuat otomatis
 
-Stores, Tables, Categories, Menu, Orders, OrderItems, Customers, Reservations, Inventory, Staff,
-AuditLog, Settings.
+Stores, Tables, Categories, Menu, Orders, OrderItems, **OrderIngredientUsage**, Customers, Reservations, Inventory,
+**Suppliers, Purchases, PurchaseItems, Recipes, StockMovements, Promotions, Vouchers, Payments, LoyaltyTransactions**,
+Staff, **Shifts**, AuditLog, **Subscriptions**, Settings. Total **24 sheet**.
 
 ## QR customer
 
@@ -171,9 +315,8 @@ rincian pesanan. Isi keranjang disimpan di `localStorage` agar tidak hilang saat
 - PWA: installable (kartu instalasi otomatis), shell offline, dan menu publik ter-cache network-first.
   Order pelanggan yang dibuat saat offline masuk antrean localStorage dan terkirim otomatis ketika
   koneksi kembali.
-- Login memakai satu akun admin dari environment variable. Untuk beberapa staf dengan peran
-  berbeda (kasir, dapur, manajer), sheet `Staff` sudah punya kolom `role` dan `pinHash`
-  sebagai dasar pengembangan berikutnya.
+- Login mendukung akun Pemilik/Admin dari environment variable **dan** login Staff menggunakan PIN.
+  Staff wajib membuka shift sebelum melakukan transaksi POS/pembayaran; Admin dapat melakukan operasi darurat tanpa shift.
 - Mengganti `AUTH_SECRET` otomatis membatalkan semua session yang sedang berjalan —
   pakai itu bila perlu memaksa semua perangkat logout.
 - Google Apps Script + Sheets punya kuota harian. Cocok untuk restoran kecil/menengah;
