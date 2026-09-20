@@ -281,3 +281,20 @@ berkala (File → Make a copy) sebagai backup.
 ---
 
 *Kastriva Smart Kasir — Enterprise POS berbasis Next.js + Google Apps Script + Google Sheets.*
+
+## License Center Web
+
+License Center digunakan pemilik Kastriva untuk membuat kode lisensi tanpa harus menjalankan command generator setiap kali ada pelanggan baru.
+
+1. Jalankan sekali `npm run license-center:setup -- 'password-khusus-license-center'`.
+2. Simpan output `LICENSE_CENTER_PASSWORD_HASH` dan `LICENSE_CENTER_AUTH_SECRET` ke Vercel Environment Variables.
+3. Pastikan `LICENSE_SIGNING_SECRET` tetap sama dengan secret lisensi KSP1 yang sudah digunakan.
+4. Redeploy Vercel.
+5. Buka `/license-center` dari HP/laptop mana pun.
+6. Login menggunakan password khusus License Center.
+7. Salin `Installation ID` dari aplikasi pelanggan.
+8. Pilih paket STARTER / PRO / BUSINESS, masa aktif, dan batas outlet.
+9. Klik **Generate KSP1** lalu **Salin Kode Lisensi**.
+10. Tempel kode tersebut pada **Owner & SaaS → Subscription → Aktifkan Lisensi** di instalasi pelanggan.
+
+License Center tidak ditampilkan di sidebar POS dan tidak menggunakan session Admin POS agar pelanggan yang menjadi Admin tokonya tidak dapat menerbitkan lisensi sendiri.

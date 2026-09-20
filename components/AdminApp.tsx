@@ -33,7 +33,6 @@ import {useOnline, useResource} from "@/components/admin/useResource";
 import {gasCall} from "@/lib/api";
 import PosPage from "@/components/admin/PosPage";
 import {KitchenPage, OrdersPage} from "@/components/admin/OrderPages";
-import GuideModal from "@/components/admin/GuideModal";
 import {
   CustomersPage,
   MenuManagerPage,
@@ -47,12 +46,13 @@ import InventoryProPage from "@/components/admin/InventoryProPage";
 import HardwarePage from "@/components/admin/HardwarePage";
 import PromoLoyaltyPage from "@/components/admin/PromoLoyaltyPage";
 import {AdvancedAnalyticsPage, OwnerSaasPage} from "@/components/admin/SaasPages";
+import GuidePage from "@/components/admin/GuidePage";
 
 const nav: readonly [string, LucideIcon][] = [
   ["Dashboard", LayoutDashboard], ["POS", ShoppingCart], ["Pesanan", ClipboardList], ["Dapur", ChefHat],
   ["Meja", Grid2X2], ["Reservasi", CalendarDays], ["Menu", BookOpen], ["Inventory", Package],
   ["Promo & Loyalty", BadgePercent], ["Pelanggan", Users], ["Shift", Clock3], ["Staff", Users], ["Laporan", BarChart3],
-  ["Analytics", Activity], ["QR & Online", QrCode], ["Perangkat", ScanBarcode], ["Owner & SaaS", Crown], ["Pengaturan", Settings]
+  ["Analytics", Activity], ["QR & Online", QrCode], ["Perangkat", ScanBarcode], ["Owner & SaaS", Crown], ["Panduan", CircleHelp], ["Pengaturan", Settings]
 ];
 
 const ROLE_PAGES: Record<string, string[]> = {
@@ -71,7 +71,6 @@ export default function AdminApp() {
   const router = useRouter();
   const [page, setPage] = useState("Dashboard");
   const [open, setOpen] = useState(false);
-  const [guideOpen, setGuideOpen] = useState(false);
   const [toast, setToast] = useState("");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const online = useOnline();
@@ -192,6 +191,7 @@ export default function AdminApp() {
     if (page === "Laporan") return <ReportsPage />;
     if (page === "Analytics") return <AdvancedAnalyticsPage />;
     if (page === "Owner & SaaS") return <OwnerSaasPage notify={notify} selectedStoreId={activeStoreId} />;
+    if (page === "Panduan") return <GuidePage />;
     if (page === "QR & Online") return <OnlinePage tables={tables} />;
     if (page === "Perangkat") return <HardwarePage notify={notify} />;
     if (page === "Pengaturan")
@@ -277,8 +277,8 @@ export default function AdminApp() {
               type="button"
               className="iconBtn"
               aria-label="Panduan penggunaan"
-              title="Panduan penggunaan"
-              onClick={() => setGuideOpen(true)}
+              title="Buka panduan"
+              onClick={() => setPage("Panduan")}
             >
               <CircleHelp size={18} aria-hidden="true" />
             </button>
@@ -298,8 +298,6 @@ export default function AdminApp() {
           {toast}
         </div>
       ) : null}
-
-      {guideOpen ? <GuideModal onClose={() => setGuideOpen(false)} /> : null}
     </div>
   );
 }

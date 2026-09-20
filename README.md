@@ -325,3 +325,25 @@ rincian pesanan. Isi keranjang disimpan di `localStorage` agar tidak hilang saat
 ## Logo
 
 `public/brand/logo.png` dan seluruh ikon PWA di `public/icons/`.
+
+## Kastriva License Center (v2.5.2)
+
+Versi ini menambahkan portal web khusus penerbit lisensi di `/license-center`. Portal ini sengaja **tidak** memakai login Admin POS pelanggan. Generator memakai session HttpOnly terpisah dan `LICENSE_SIGNING_SECRET` tetap berada di server.
+
+Setup sekali saja:
+
+```bash
+npm run license-center:setup -- 'password-khusus-yang-kuat'
+```
+
+Masukkan output `LICENSE_CENTER_PASSWORD_HASH` dan `LICENSE_CENTER_AUTH_SECRET` ke Environment Variables Vercel. Pastikan `LICENSE_SIGNING_SECRET` yang sudah dipakai KSP1 tetap tersedia, lalu redeploy.
+
+Setelah deploy, buka:
+
+```text
+https://domain-kastriva-anda/license-center
+```
+
+Isi Customer, Installation ID, paket, masa aktif, dan batas outlet lalu klik **Generate KSP1**. Kode dapat langsung disalin dari HP dan ditempel ke menu **Owner & SaaS → Subscription** pada instalasi pelanggan.
+
+> Jangan memberikan password License Center kepada pelanggan dan jangan menaruh variabel License Center / signing secret dengan prefix `NEXT_PUBLIC_`.
