@@ -95,13 +95,13 @@ export function OwnerSaasPage({notify, selectedStoreId}: {notify:(message:string
 export function AdvancedAnalyticsPage() {
   const [days,setDays]=useState(30);
   const analyticsRes=useResource<GasAdvancedAnalytics>(()=>gasCall("getAnalytics",{days}),60_000);
-  useEffect(() => { analyticsRes.reload(); }, [days, analyticsRes.reload]);
-  const data=analyticsRes.data;
+  const {data, error, setup, loading, reload} = analyticsRes;
+  useEffect(() => { reload(); }, [days, reload]);
   const max=(rows:{value:number}[]|undefined)=>Math.max(1,...(rows||[]).map(r=>r.value));
   return <div className="grid" style={{gap:16}}>
     <div className="split"><div><h2>Advanced Analytics</h2><p className="muted">Jam ramai, channel, staff, kategori, dan repeat customer untuk outlet aktif.</p></div><select className="input" style={{width:150}} value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 Hari</option><option value={30}>30 Hari</option><option value={90}>90 Hari</option></select></div>
     <div className="grid stats"><Metric label="Order Lunas" value={String(data?.paidOrders??"…")}/><Metric label="Unique Customer" value={String(data?.uniqueCustomers??"…")}/><Metric label="Repeat Customer" value={String(data?.repeatCustomers??"…")}/><Metric label="Repeat Rate" value={`${data?.repeatRate??0}%`}/></div>
-    {analyticsRes.error?<ErrorState message={analyticsRes.error} setup={analyticsRes.setup} onRetry={analyticsRes.reload}/>:analyticsRes.loading&&!data?<Skeleton rows={6}/>:<div className="grid layout2"><Breakdown title="Jam Penjualan" rows={data?.hourly||[]} max={max(data?.hourly)}/><Breakdown title="Channel" rows={data?.channel||[]} max={max(data?.channel)}/><Breakdown title="Penjualan per Staff" rows={data?.staff||[]} max={max(data?.staff)}/><Breakdown title="Kategori" rows={data?.category||[]} max={max(data?.category)}/></div>}
+    {error?<ErrorState message={error} setup={setup} onRetry={reload}/>:loading&&!data?<Skeleton rows={6}/>:<div className="grid layout2"><Breakdown title="Jam Penjualan" rows={data?.hourly||[]} max={max(data?.hourly)}/><Breakdown title="Channel" rows={data?.channel||[]} max={max(data?.channel)}/><Breakdown title="Penjualan per Staff" rows={data?.staff||[]} max={max(data?.staff)}/><Breakdown title="Kategori" rows={data?.category||[]} max={max(data?.category)}/></div>}
   </div>;
 }
 

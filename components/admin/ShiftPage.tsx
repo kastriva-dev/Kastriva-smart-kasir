@@ -1,5 +1,5 @@
 "use client";
-import {useMemo, useState} from "react";
+import {useState} from "react";
 import {Clock3, LockKeyhole, PlayCircle, RefreshCw, StopCircle} from "lucide-react";
 import {gasCall, type GasShift, type SessionInfo} from "@/lib/api";
 import {rupiah} from "@/lib/data";
@@ -18,10 +18,9 @@ export default function ShiftPage({session, notify}: {session: SessionInfo; noti
   const [busy, setBusy] = useState(false);
 
   const current = currentRes.data || null;
-  const rows = shiftsRes.data || [];
   const canOwnShift = session.role !== "admin";
 
-  const todayRows = useMemo(() => rows.slice(0, 30), [rows]);
+  const todayRows = (shiftsRes.data || []).slice(0, 30);
   const reload = () => { currentRes.reload(); shiftsRes.reload(); };
 
   const openShift = async () => {

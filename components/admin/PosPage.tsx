@@ -1,5 +1,5 @@
 "use client";
-import {useEffect, useMemo, useRef, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {Banknote, CreditCard, Pause, Play, Printer, QrCode, ScanBarcode, Trash2, Wallet, X, BadgePercent, UserRoundSearch} from "lucide-react";
 import {rupiah} from "@/lib/data";
 import BarcodeScannerModal from "@/components/admin/BarcodeScannerModal";
@@ -88,7 +88,26 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
   }, []);
 
 
-  const scanBarcode = (raw: string) => {
+  const add = useCallback((item: GasMenu) => {
+    if (!hasStock(item)) {
+      notify(`Stok habis: ${item.name}`);
+      return;
+    }
+    setCart(lines => {
+      const found = lines.find(line => line.item.id === item.id);
+      const currentQty = found ? found.qty : 0;
+      const stock = stockOf(item);
+      if (stock !== null && currentQty + 1 > stock) {
+        notify(`Stok ${item.name} tersisa ${stock}`);
+        return lines;
+      }
+      return found
+        ? lines.map(line => (line.item.id === item.id ? {...line, qty: line.qty + 1} : line))
+        : [...lines, {item, qty: 1}];
+    });
+  }, [notify]);
+
+  const scanBarcode = useCallback((raw: string) => {
     const barcode = normalizeScannedBarcode(raw);
     if (!barcode) return;
     const item = menus.find(menu => normalizeScannedBarcode(menu.barcode || "") === barcode);
@@ -98,7 +117,7 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
     }
     add(item);
     notify(`${item.name} ditambahkan dari barcode`);
-  };
+  }, [add, menus, notify]);
 
   useEffect(() => {
     const settings = loadHardwareSettings();
@@ -123,7 +142,7 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [menus, payOpen, cameraOpen, receipt]);
+  }, [payOpen, cameraOpen, receipt, scanBarcode]);
 
   const categories = useMemo(
     () => ["All", ...Array.from(new Set(menus.map(m => m.category || "Lainnya")))],
@@ -158,25 +177,6 @@ export default function PosPage({menus, tables, settings, storeName, notify, ref
   const pointsPreview = redeemPoints * pointValue;
   const discountValue = Math.min(subtotal, manualDiscountPreview + promoPreview + voucherPreview + pointsPreview);
   const totals = useMemo(() => previewTotals(subtotal, discountValue, settings), [subtotal, discountValue, settings]);
-
-  const add = (item: GasMenu) => {
-    if (!hasStock(item)) {
-      notify(`Stok habis: ${item.name}`);
-      return;
-    }
-    setCart(lines => {
-      const found = lines.find(line => line.item.id === item.id);
-      const currentQty = found ? found.qty : 0;
-      const stock = stockOf(item);
-      if (stock !== null && currentQty + 1 > stock) {
-        notify(`Stok ${item.name} tersisa ${stock}`);
-        return lines;
-      }
-      return found
-        ? lines.map(line => (line.item.id === item.id ? {...line, qty: line.qty + 1} : line))
-        : [...lines, {item, qty: 1}];
-    });
-  };
 
   const changeQty = (id: string, delta: number) =>
     setCart(lines =>

@@ -37,7 +37,12 @@ export default function PromoLoyaltyPage({settings, reloadSettings, notify}: Pro
   };
   const remove=async(sheet:"Promotions"|"Vouchers",id:string)=>{
     if(!window.confirm("Hapus data ini?")) return;
-    try{await gasCall("deleteData",{sheet,id}); sheet==="Promotions"?promos.reload():vouchers.reload(); notify("Data dihapus");}
+    try{
+      await gasCall("deleteData",{sheet,id});
+      if(sheet==="Promotions") promos.reload();
+      else vouchers.reload();
+      notify("Data dihapus");
+    }
     catch(e){notify(e instanceof Error?e.message:"Gagal menghapus");}
   };
   const saveLoyalty=async()=>{
@@ -57,11 +62,11 @@ export default function PromoLoyaltyPage({settings, reloadSettings, notify}: Pro
     </div>
 
     {tab==="promo"?<div className="card glass"><div className="split"><div><h2>Promo Otomatis/Pilihan Kasir</h2><p className="muted">Persen atau nominal, minimum belanja, batas diskon, periode aktif.</p></div><button className="btn primary" onClick={()=>setPromoDraft({...emptyPromo})}><Plus size={15}/> Promo</button></div>
-      {(promos.data||[]).length===0?<EmptyState message="Belum ada promo."/>:<div className="tableWrap" style={{marginTop:10}}><table className="data"><thead><tr><th>Nama</th><th>Benefit</th><th>Min. Belanja</th><th>Periode</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{(promos.data||[]).map(r=><tr key={r.id}><td><b>{r.name}</b></td><td>{ruleText(r)}</td><td>{rupiah(r.minSpend||0)}</td><td className="muted">{r.startAt||"Sekarang"} → {r.endAt||"∞"}</td><td><span className={`badge ${r.active?"green":"red"}`}>{r.active?"AKTIF":"OFF"}</span></td><td><div className="btnRow"><button className="btn" onClick={()=>setPromoDraft({...r,value:String(r.value),minSpend:String(r.minSpend||0),maxDiscount:String(r.maxDiscount||0),startAt:r.startAt||"",endAt:r.endAt||""})}>Edit</button><button className="btn danger" onClick={()=>remove("Promotions",r.id)}>Hapus</button></div></td></tr>)}</tbody></table></div>}
+      {(promos.data||[]).length===0?<EmptyState message="Belum ada promo."/>:<div className="tableWrap" style={{marginTop:10}}><table className="data"><thead><tr><th>Nama</th><th>Benefit</th><th>Min. Belanja</th><th>Periode</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{(promos.data||[]).map(r=><tr key={r.id}><td><b>{r.name}</b></td><td>{ruleText(r)}</td><td>{rupiah(r.minSpend||0)}</td><td className="muted">{r.startAt||"Sekarang"} → {r.endAt||"∞"}</td><td><span className={`badge ${r.active?"green":"red"}`}>{r.active?"AKTIF":"OFF"}</span></td><td><div className="btnRow"><button className="btn" onClick={()=>setPromoDraft({...r,type:r.type==="FIXED"?"FIXED":"PERCENT",value:String(r.value),minSpend:String(r.minSpend||0),maxDiscount:String(r.maxDiscount||0),startAt:r.startAt||"",endAt:r.endAt||""})}>Edit</button><button className="btn danger" onClick={()=>remove("Promotions",r.id)}>Hapus</button></div></td></tr>)}</tbody></table></div>}
     </div>:null}
 
     {tab==="voucher"?<div className="card glass"><div className="split"><div><h2>Voucher</h2><p className="muted">Kode unik dengan kuota pemakaian dan periode berlaku.</p></div><button className="btn primary" onClick={()=>setVoucherDraft({...emptyVoucher})}><Plus size={15}/> Voucher</button></div>
-      {(vouchers.data||[]).length===0?<EmptyState message="Belum ada voucher."/>:<div className="tableWrap" style={{marginTop:10}}><table className="data"><thead><tr><th>Kode</th><th>Nama</th><th>Benefit</th><th>Pemakaian</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{(vouchers.data||[]).map(r=><tr key={r.id}><td><code>{r.code}</code></td><td>{r.name}</td><td>{ruleText(r)}</td><td>{r.usedCount||0}/{r.usageLimit||"∞"}</td><td><span className={`badge ${r.active?"green":"red"}`}>{r.active?"AKTIF":"OFF"}</span></td><td><div className="btnRow"><button className="btn" onClick={()=>setVoucherDraft({...r,code:r.code,value:String(r.value),minSpend:String(r.minSpend||0),maxDiscount:String(r.maxDiscount||0),usageLimit:String(r.usageLimit||0),usedCount:r.usedCount||0,startAt:r.startAt||"",endAt:r.endAt||""})}>Edit</button><button className="btn danger" onClick={()=>remove("Vouchers",r.id)}>Hapus</button></div></td></tr>)}</tbody></table></div>}
+      {(vouchers.data||[]).length===0?<EmptyState message="Belum ada voucher."/>:<div className="tableWrap" style={{marginTop:10}}><table className="data"><thead><tr><th>Kode</th><th>Nama</th><th>Benefit</th><th>Pemakaian</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{(vouchers.data||[]).map(r=><tr key={r.id}><td><code>{r.code}</code></td><td>{r.name}</td><td>{ruleText(r)}</td><td>{r.usedCount||0}/{r.usageLimit||"∞"}</td><td><span className={`badge ${r.active?"green":"red"}`}>{r.active?"AKTIF":"OFF"}</span></td><td><div className="btnRow"><button className="btn" onClick={()=>setVoucherDraft({...r,type:r.type==="FIXED"?"FIXED":"PERCENT",code:r.code,value:String(r.value),minSpend:String(r.minSpend||0),maxDiscount:String(r.maxDiscount||0),usageLimit:String(r.usageLimit||0),usedCount:r.usedCount||0,startAt:r.startAt||"",endAt:r.endAt||""})}>Edit</button><button className="btn danger" onClick={()=>remove("Vouchers",r.id)}>Hapus</button></div></td></tr>)}</tbody></table></div>}
     </div>:null}
 
     {tab==="loyalty"?<div className="card glass"><div className="split"><div><h2>Membership & Loyalty Point</h2><p className="muted">Poin diberikan setelah transaksi PAID dan dibalik saat refund.</p></div><span className={`badge ${loyalty.enabled?"green":"red"}`}>{loyalty.enabled?"AKTIF":"OFF"}</span></div>

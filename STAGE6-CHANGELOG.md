@@ -45,3 +45,7 @@ Version: **2.5.0**
 - GAS `Code.gs`: syntax check PASS.
 - 43 file TypeScript/TSX: 0 syntax diagnostics melalui TypeScript transpile check.
 - Full `npm run typecheck` / `npm run build` tetap perlu dijalankan pada Node >=22.18 dengan dependencies terpasang.
+
+
+## Hotfix 2.5.1 — Vercel Build
+Lihat `STAGE6-HOTFIX.md`. Memperbaiki type union Promo/Voucher dan warning React/ESLint yang muncul pada build production. Tidak ada perubahan schema database.
